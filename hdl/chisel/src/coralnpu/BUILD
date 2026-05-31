@@ -404,6 +404,7 @@ chisel_library(
         ":coralnpu_rvv",
         ":retirement_buffer",
         ":rvvi_trace",
+        "//hdl/chisel/src/bus",
         "//hdl/chisel/src/common",
         "//hdl/chisel/src/common:aligner",
         "//hdl/chisel/src/common:circular_buffer_multi",
@@ -470,6 +471,13 @@ chisel_cc_library(
     chisel_lib = ":coralnpu_scalar",
     emit_class = "coralnpu.EmitAlu",
     module_name = "Alu",
+)
+
+chisel_cc_library(
+    name = "lsu_v3_cc_library",
+    chisel_lib = ":coralnpu_scalar",
+    emit_class = "coralnpu.LsuV3Emitter",
+    module_name = "LsuV3",
 )
 
 chisel_cc_library(
@@ -665,6 +673,7 @@ RVV_CORE_MINI_AXI_COMMON_GEN_FLAGS = [
     "--enableRvv=True",
     "--enableFloat=True",
     "--enableZfbfmin=True",
+    "--useLsuV3=True",
     "--useAxi",
 ]
 

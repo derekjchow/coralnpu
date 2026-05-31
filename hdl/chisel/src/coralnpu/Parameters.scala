@@ -80,6 +80,11 @@ class Parameters(var m: Seq[MemoryRegion] = Seq(), val hartId: Int = 0) {
   val rvvVlen = 128
   def rvvVlenb: Int = { rvvVlen / 8 }
 
+  // Use the LsuV3 load/store unit (single consolidated TileLink master port,
+  // wrapped behind a region mux that drives the legacy ibus/dbus/ebus) instead
+  // of LsuV2.  Scoped to RVV core builds; other cores keep LsuV2.
+  var useLsuV3 = false
+
   def useRetirementBuffer: Boolean = { enableVerification }
 
   // Scalar Floating point

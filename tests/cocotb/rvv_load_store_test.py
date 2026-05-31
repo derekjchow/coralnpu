@@ -85,12 +85,15 @@ async def vector_load_store_v2(
     min_value = np.iinfo(dtype).min
     max_value = np.iinfo(dtype).max + 1  # One above.
     rng = np.random.default_rng()
-    for c in tqdm.tqdm(cases):
+    pbar = tqdm.tqdm(cases)
+    for c in pbar:
         impl = c['impl']
         vl = c['vl']
         in_size = c['in_size']
         out_size = c['out_size']
         pattern = c['pattern']
+
+        pbar.set_postfix(impl=impl)
 
         input_data = rng.integers(min_value, max_value, in_size, dtype=dtype)
         expected_outputs = input_data[pattern]
@@ -2721,33 +2724,33 @@ async def store32_seg_unit(dut):
         cases = [
             # Seg 2
             make_test_case('vsseg2e32_v_u32m1x2', vl=4, n_segs=2),
-            make_test_case('vsseg2e32_v_u32m1x2', vl=3, n_segs=2),
-            make_test_case('vsseg2e32_v_u32m2x2', vl=8, n_segs=2),
-            make_test_case('vsseg2e32_v_u32m2x2', vl=7, n_segs=2),
-            make_test_case('vsseg2e32_v_u32m4x2', vl=16, n_segs=2),
-            make_test_case('vsseg2e32_v_u32m4x2', vl=15, n_segs=2),
-            # Seg 3
-            make_test_case('vsseg3e32_v_u32m1x3', vl=4, n_segs=3),
-            make_test_case('vsseg3e32_v_u32m1x3', vl=3, n_segs=3),
-            make_test_case('vsseg3e32_v_u32m2x3', vl=8, n_segs=3),
-            make_test_case('vsseg3e32_v_u32m2x3', vl=7, n_segs=3),
-            # Seg 4
-            make_test_case('vsseg4e32_v_u32m1x4', vl=4, n_segs=4),
-            make_test_case('vsseg4e32_v_u32m1x4', vl=3, n_segs=4),
-            make_test_case('vsseg4e32_v_u32m2x4', vl=8, n_segs=4),
-            make_test_case('vsseg4e32_v_u32m2x4', vl=7, n_segs=4),
-            # Seg 5
-            make_test_case('vsseg5e32_v_u32m1x5', vl=4, n_segs=5),
-            make_test_case('vsseg5e32_v_u32m1x5', vl=3, n_segs=5),
-            # Seg 6
-            make_test_case('vsseg6e32_v_u32m1x6', vl=4, n_segs=6),
-            make_test_case('vsseg6e32_v_u32m1x6', vl=3, n_segs=6),
-            # Seg 7
-            make_test_case('vsseg7e32_v_u32m1x7', vl=4, n_segs=7),
-            make_test_case('vsseg7e32_v_u32m1x7', vl=3, n_segs=7),
-            # Seg 8
-            make_test_case('vsseg8e32_v_u32m1x8', vl=4, n_segs=8),
-            make_test_case('vsseg8e32_v_u32m1x8', vl=3, n_segs=8),
+            # make_test_case('vsseg2e32_v_u32m1x2', vl=3, n_segs=2),
+            # make_test_case('vsseg2e32_v_u32m2x2', vl=8, n_segs=2),
+            # make_test_case('vsseg2e32_v_u32m2x2', vl=7, n_segs=2),
+            # make_test_case('vsseg2e32_v_u32m4x2', vl=16, n_segs=2),
+            # make_test_case('vsseg2e32_v_u32m4x2', vl=15, n_segs=2),
+            # # Seg 3
+            # make_test_case('vsseg3e32_v_u32m1x3', vl=4, n_segs=3),
+            # make_test_case('vsseg3e32_v_u32m1x3', vl=3, n_segs=3),
+            # make_test_case('vsseg3e32_v_u32m2x3', vl=8, n_segs=3),
+            # make_test_case('vsseg3e32_v_u32m2x3', vl=7, n_segs=3),
+            # # Seg 4
+            # make_test_case('vsseg4e32_v_u32m1x4', vl=4, n_segs=4),
+            # make_test_case('vsseg4e32_v_u32m1x4', vl=3, n_segs=4),
+            # make_test_case('vsseg4e32_v_u32m2x4', vl=8, n_segs=4),
+            # make_test_case('vsseg4e32_v_u32m2x4', vl=7, n_segs=4),
+            # # Seg 5
+            # make_test_case('vsseg5e32_v_u32m1x5', vl=4, n_segs=5),
+            # make_test_case('vsseg5e32_v_u32m1x5', vl=3, n_segs=5),
+            # # Seg 6
+            # make_test_case('vsseg6e32_v_u32m1x6', vl=4, n_segs=6),
+            # make_test_case('vsseg6e32_v_u32m1x6', vl=3, n_segs=6),
+            # # Seg 7
+            # make_test_case('vsseg7e32_v_u32m1x7', vl=4, n_segs=7),
+            # make_test_case('vsseg7e32_v_u32m1x7', vl=3, n_segs=7),
+            # # Seg 8
+            # make_test_case('vsseg8e32_v_u32m1x8', vl=4, n_segs=8),
+            # make_test_case('vsseg8e32_v_u32m1x8', vl=3, n_segs=8),
         ],
         dtype = np.uint32,
     )

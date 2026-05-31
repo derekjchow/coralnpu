@@ -127,6 +127,13 @@ class SCore(p: Parameters) extends Module {
   // Decode
   // Decode/Dispatch
   dispatch.io.inst <> fetch.io.inst.lanes
+
+  for (i <- 0 until p.instructionLanes) {
+    when (dispatch.io.inst(i).fire) {
+    val inst = dispatch.io.inst(i).bits
+      printf(cf"Dispatching 0x${inst.inst}%x at 0x${inst.addr}%x\n")
+    }
+  }
   dispatch.io.halted := csr.io.halted || csr.io.wfi || csr.io.dm.debug_mode
   dispatch.io.mactive := false.B
   dispatch.io.lsuActive := lsu.io.active

@@ -18,6 +18,7 @@ import chisel3._
 import chisel3.util._
 import common._
 import coralnpu.rvv._
+import bus._
 
 class DFlushFenceiIO(p: Parameters) extends DFlushIO(p) {
   val fencei = Output(Bool())
@@ -64,6 +65,9 @@ class Lsu(p: Parameters) extends Module {
 
 object Lsu {
   def apply(p: Parameters): Lsu = {
+    if (p.useLsuV3) {
+      return Module(new LsuV3Wrapper(p))
+    }
     return Module(new LsuV2(p))
   }
 }
@@ -1082,3 +1086,524 @@ class LsuV2(p: Parameters) extends Lsu(p) {
   io.active := !slot.slotIdle() || (opQueue.io.nEnqueued =/= 0.U)
 }
 
+// Per-byte lifecycle in an LsuV3SuperSlot entry.
+//   Idle     -> no work assigned (default / post-completion).
+//   Pending  -> addr (and data, for stores) ready; eligible for emitTxn.
+//   InFlight -> selected into a TL-A beat; awaiting D-channel ack.
+//   Done     -> work complete.
+object LsuV3EntryState extends ChiselEnum {
+  val Idle = Value
+  val Pending = Value
+  val InFlight = Value
+  val Done = Value
+}
+
+class LsuV3Entry extends Bundle {
+  val data = UInt(8.W)
+  val addr = UInt(32.W)
+  val state = LsuV3EntryState()
+}
+
+object LsuV3Entry {
+  def apply(data: UInt, addr: UInt, state: LsuV3EntryState.Type): LsuV3Entry = {
+    val result = Wire(new LsuV3Entry())
+    result.data := data
+    result.addr := addr
+    result.state := state
+    result
+  }
+}
+
+class LsuV3SuperSlot(vlenb: Int, dlenb: Int) extends Bundle {
+  // Geometry constants used throughout this class.
+  private val nEntries = vlenb * 8
+  private val nRegions = nEntries / dlenb
+  private val lineBits = log2Ceil(dlenb)
+  // Cap simultaneously-outstanding transactions at 2 (never exceeding the
+  // number of distinct lines in the slot).
+  private val nSources = nRegions.min(2)
+
+  val store = Bool()
+  val rd = UInt(5.W)
+  val pc = UInt(32.W)  // Instruction PC, retained for fault epc.
+
+  // Entries of the LSU slot
+  val entries = Vec(nEntries, new LsuV3Entry())
+
+  // Address to dispatch next
+  val dispatchNext = Valid(UInt(32.W))
+
+  // Source-tag table: index = local source id, valid = tag in use, bits = the
+  // dispatched dlenb-line address.  Correlates address-less D responses
+  // (tld.source) back to the line whose bytes they retire.
+  val sources = Vec(nSources, Valid(UInt(32.W)))
+
+  // Which region is active
+  // val activeRegion = UInt(log2Ceil(nRegions+1).W)
+
+  // Returns region n and n+1 which can participate in a LSU operation
+  def getRegion(): Vec[LsuV3Entry] = {
+    // TODO(derekjchow): Implement properly for scalar (window on activeRegion).
+    VecInit((0 until 2 * dlenb).map(i => entries(i)))
+  }
+
+  def generateTransaction(tlp: TLULParameters)
+      : (LsuV3SuperSlot, Valid[TileLink_A_ChannelBase[NoUser]]) = {
+    val txn = Wire(new TileLink_A_ChannelBase(tlp, () => new NoUser))
+    txn.opcode := Mux(
+        store,
+        TLULOpcodesA.PutPartialData,  // TODO(derekjchow): Relax this
+        TLULOpcodesA.Get
+    ).asUInt
+    // TODO(derekjchow): Handle aligment and such
+    txn.param := 0.U  // Reserved in TL-UL; must be 0 (param is only used by TL-C).
+    txn.size  := log2Ceil(dlenb).U  // TODO: Populate based on transaction type
+    // Allocate a free source tag for this transaction.  The TileLink source is
+    // the master transaction ID; we set its MSB to 1 to mark LSU transactions,
+    // leaving the whole MSB=0 half of the ID space to the AXI slave interface
+    // (which thus has room for many concurrent IDs).  The free-tag index sits
+    // in the low bits, so the LSU's IDs form a contiguous block.
+    // TODO(derekjchow): the two ping-pong slots share the port, so LsuV3 must
+    // offset each slot's source range (or pass a base) to avoid collisions.
+    val freeMask = VecInit(sources.map(!_.valid))
+    val hasFree  = freeMask.asUInt.orR
+    val freeIdx  = PriorityEncoder(freeMask)
+    txn.source := Cat(1.U(1.W), freeIdx.pad(tlp.o - 1))
+    txn.address := dispatchNext.bits
+    txn.user := DontCare  // NoUser carries no fields to drive.
+
+    // Only the entries in the active region (getRegion) participate in a
+    // transaction.  Restricting the scatter to this fixed-size window bounds
+    // the comparator/select fan-in instead of scaling it with the whole slot.
+    val region = getRegion()
+
+    // Scatter the region bytes belonging to the dispatched line onto the TL-A
+    // beat.  An entry participates when it is Pending and its address falls in
+    // the same dlenb-sized line as dispatchNext; the entry's low address bits
+    // select its lane within the beat.  Loads (Get) ignore the scattered data
+    // but still assert the mask so the accessed bytes are tracked.
+    // TODO(derekjchow): Properly support vector here.
+    val dispatchLine = dispatchNext.bits(31, lineBits)
+    val laneValid = VecInit(region.map(e =>
+        dispatchNext.valid &&
+        (e.state === LsuV3EntryState.Pending) &&
+        (e.addr(31, lineBits) === dispatchLine)))
+    val laneIndex = VecInit(region.map(_.addr(lineBits - 1, 0)))
+    val laneData = VecInit(region.map(_.data))
+    val (beatData, beatMask, selectedRegionEntities) =
+        Scatter(laneValid, laneIndex, laneData)
+    txn.mask := beatMask.asUInt
+    txn.data := beatData.asUInt
+
+    // A transaction is emitted only if there are bytes to send, a free source
+    // tag, and the line is not already outstanding (keeps source<->line 1:1, so
+    // a response's line-based retirement is unambiguous).
+    val lineBusy = sources.map(s =>
+        s.valid && (s.bits(31, lineBits) === dispatchLine)).reduce(_ || _)
+    val txnValid = selectedRegionEntities.asUInt.orR && hasFree && !lineBusy
+
+    // Advance the scattered bytes from Pending to InFlight: they are now
+    // committed to this beat and must not be re-dispatched until their
+    // D-channel response arrives.  getRegion() returns the leading 2*dlenb
+    // entries, so region index i maps directly to entry i.
+    // TODO(derekjchow): Once getRegion() windows on activeRegion, the region
+    // index no longer equals the entry index -- map region index i back to its
+    // global entry (entry = activeRegion*dlenb + i) before writing state here.
+    val result = WireInit(this)
+    for (i <- region.indices) {
+      result.entries(i).state := Mux(
+          selectedRegionEntities(i), LsuV3EntryState.InFlight, region(i).state)
+    }
+    // Record the dispatched line under the allocated tag.  Iterating the table
+    // makes the valid bit a pure logical OR -- allocation can only set a tag,
+    // never clear one -- instead of a dynamically-indexed write.  A non-firing
+    // call (or a full table) leaves alloc low, so nothing is clobbered.
+    for (i <- 0 until nSources) {
+      val alloc = txnValid && (freeIdx === i.U)
+      result.sources(i).valid := sources(i).valid || alloc
+      result.sources(i).bits  := Mux(alloc, dispatchNext.bits, sources(i).bits)
+    }
+    // Advance dispatchNext to the next line in the region that still has
+    // Pending bytes.  The bytes just committed to this beat are now InFlight
+    // (selectedRegionEntities), so they are excluded; when nothing Pending
+    // remains in the region, dispatchNext goes invalid and the region drains.
+    val pendingAfter = region.indices.map(i =>
+        !selectedRegionEntities(i) &&
+        (region(i).state === LsuV3EntryState.Pending))
+    result.dispatchNext := MakeValid(
+        pendingAfter.reduce(_ || _),
+        PriorityMux(pendingAfter, region.map(_.addr)))
+
+    // Emit only when there are bytes to send and a free, non-conflicting tag.
+    (result, MakeValid(txnValid, txn))
+  }
+
+  // Apply a TileLink-UL D-channel response to this slot.  The D channel carries
+  // no address, only its source tag, so the tag is looked up in the source-tag
+  // table to recover the dispatched line; retirement is gated to the InFlight
+  // bytes whose line matches (mismatched/unallocated responses retire nothing
+  // and trip an assert).  Load responses (AccessAckData) gather their byte from
+  // the beat by lane; store responses (AccessAck) carry no data.  Matched bytes
+  // retire to Done and the tag is freed.  Returns the updated slot and a
+  // Valid[FaultInfo] (valid on tld.error) for the caller to raise a fault.
+  def receiveTransaction(p: Parameters, tld: TileLink_D_ChannelBase[NoUser])
+      : (LsuV3SuperSlot, Valid[FaultInfo]) = {
+    val result = WireInit(this)
+    val isLoad = !store
+    val beatBytes = UIntToVec(tld.data, 8)  // dlenb response bytes, lane-indexed.
+
+    // Recover the dispatched line for this response's source tag.  The LSU
+    // encodes the tag in the low bits of the source (the MSB just marks LSU vs
+    // AXI), so the local id is those low bits.
+    val localId  = tld.source(log2Ceil(nSources) - 1, 0)
+    val expected = sources(localId)
+    assert(expected.valid,
+        "LsuV3SuperSlot: D response for an unallocated source tag")
+
+    // Retire only InFlight bytes whose line matches the tag's recorded line.
+    val respMatch = VecInit((0 until nEntries).map(i =>
+        (entries(i).state === LsuV3EntryState.InFlight) && expected.valid &&
+        (entries(i).addr(31, lineBits) === expected.bits(31, lineBits))))
+    for (i <- 0 until nEntries) {
+      val lane = entries(i).addr(lineBits - 1, 0)
+      result.entries(i).state :=
+          Mux(respMatch(i), LsuV3EntryState.Done, entries(i).state)
+      result.entries(i).data :=
+          Mux(respMatch(i) && isLoad, beatBytes(lane), entries(i).data)
+    }
+    // Free the tag now that its bytes have retired.
+    result.sources(localId).valid := false.B
+
+    // The faulting effective address (mtval) is the lowest-index byte of the
+    // access that just responded, taken from the pre-retire matched set.
+    val fault = Wire(new FaultInfo(p))
+    fault.write := store
+    fault.addr  := PriorityMux(respMatch, entries.map(_.addr))
+    fault.epc   := pc
+    (result, MakeValid(tld.error, fault))
+  }
+}
+
+object LsuV3SuperSlot {
+  // All-zero super-slot for reset / idle state.  Matches LsuSlot.inactive.
+  def inactive(vlenb: Int, dlenb: Int): LsuV3SuperSlot = {
+    0.U.asTypeOf(new LsuV3SuperSlot(vlenb, dlenb))
+  }
+
+  def fromLsuUOp(uop: LsuUOp, vlenb: Int, dlenb: Int): LsuV3SuperSlot = {
+    val result = Wire(new LsuV3SuperSlot(vlenb, dlenb))
+    result.rd := uop.rd
+    result.store := uop.store
+    result.pc := uop.pc
+    result.sources := VecInit(Seq.fill(result.nSources)(MakeInvalid(UInt(32.W))))
+
+    val scalarElemSize = MuxLookup(uop.op, 1.U)(Seq(
+      LsuOp.LB -> 1.U,
+      LsuOp.LBU -> 1.U,
+      LsuOp.LH -> 2.U,
+      LsuOp.LHU -> 2.U,
+      LsuOp.LW -> 4.U,
+      LsuOp.SB -> 4.U,
+      LsuOp.SH -> 4.U,
+      LsuOp.SW -> 4.U,
+      LsuOp.FLOAT -> 4.U,
+    ))
+
+    // TODO(derekjchow): Support vector
+    result.entries := VecInit.tabulate(result.nEntries)(i =>
+      if (i < 4) {
+        LsuV3Entry(uop.data((8*i) + 7, 8*i),
+                   addr + i.U,
+                   LsuV3EntryState.Pending)
+      } else {
+        LsuV3Entry(0.U, 0.U, LsuV3EntryState.Done)
+      }
+    )
+    result.dispatchNext := MakeValid(false.B, )
+
+
+    // TODO(derekjchow): Address generator for float
+
+    result
+  }
+}
+
+// Lifecycle phase of an LsuV3 super-slot.
+//   Inactive  -> free; may accept a dequeued op.
+//   Fill      -> vector op pulling beats from rvv2lsu (scalar ops skip this).
+//   Transact  -> issuing TL-A transactions and collecting D responses.
+//   Writeback -> draining loads to lsu2rvv / writing rd / signaling done.
+object LsuV3Phase extends ChiselEnum {
+  val Inactive = Value
+  val Fill = Value
+  val Transact = Value
+  val Writeback = Value
+}
+
+// LsuNext mirrors the Lsu interface with two changes: the cached ibus/dbus
+// and external ebus collapse into a single consolidated TileLink-UL master
+// port, and the scalar vldst switch and flush/fence interface are removed.
+class LsuNext(p: Parameters) extends Module {
+  val io = IO(new Bundle {
+    // Decode cycle.
+    val req = Vec(p.instructionLanes, Flipped(Decoupled(new LsuCmd(p))))
+    val busPort = Flipped(new RegfileBusPortIO(p))
+    val busPort_flt = Option.when(p.enableFloat)(Flipped(new RegfileBusPortIO(p)))
+
+    // Execute cycle(s).
+    val rd = Valid(Flipped(new RegfileWriteDataIO))
+    val rd_flt = Valid(Flipped(new RegfileWriteDataIO))
+
+    // Single consolidated master TileLink-UL port (A out, D in), NoUser.
+    val tl = new TLULHost2Device(
+        new TLULParameters(p), () => new NoUser, () => new NoUser)
+
+    val fault = Valid(new FaultInfo(p))
+
+    val rvv2lsu = Option.when(p.enableRvv)(
+        Vec(2, Flipped(Decoupled(new Rvv2Lsu(p)))))
+    val lsu2rvv = Option.when(p.enableRvv)(Vec(2, Decoupled(new Lsu2Rvv(p))))
+    val rvvState = Option.when(p.enableRvv)(Input(Valid(new RvvConfigState(p))))
+
+    val queueCapacity = Output(UInt(3.W))
+    val active = Output(Bool())
+    val storeComplete = Output(Valid(UInt(32.W)))
+  })
+}
+
+// LsuV3 drives two LsuV3SuperSlots through their lifecycle, ping-ponging so
+// that one slot can fill from rvv2lsu while the other transacts on the bus.
+// Scalar ops bypass the fill phase; their entries are constructed directly
+// from the command.  The shared TL master port supports several outstanding
+// transactions, tracked by a source-tag table so D responses (which carry no
+// address) can be written back to the right slot and line.
+class LsuV3(p: Parameters) extends LsuNext(p) {
+  // ===========================================================================
+  // Instruction frontend
+  // ===========================================================================
+  val opQueue = Module(new CircularBufferMulti(new LsuUOp(p), p.instructionLanes, 4))
+  opQueue.io.flush := false.B
+  io.queueCapacity := opQueue.io.nSpace
+
+  // Accept one instruction per cycle.
+  val queueSpace = opQueue.io.nSpace
+  val validSum = io.req.map(_.valid).scan(
+      0.U(log2Ceil(p.instructionLanes + 1).W))(_+_)
+  for (i <- 0 until p.instructionLanes) {
+    io.req(i).ready := (validSum(i) < queueSpace) // && !flushCmd.valid
+  }
+
+  val ops = (0 until p.instructionLanes).map(i =>
+    MakeValid(
+        io.req(i).fire,
+        // io.req(i).fire && !LsuOp.isFlush(io.req(i).bits.op),
+        LsuUOp(p, i, io.req(i).bits, io.busPort, io.busPort_flt, io.rvvState))
+  )
+  val alignedOps = Aligner(ops)
+
+  opQueue.io.enqValid := PopCount(alignedOps.map(_.valid))
+  opQueue.io.enqData := alignedOps.map(_.bits)
+  assert(opQueue.io.enqValid <= opQueue.io.nSpace)
+
+  
+
+
+
+
+}
+
+object LsuV3 {
+  def apply(p: Parameters): LsuV3 = Module(new LsuV3(p))
+}
+
+object LsuTlulMuxState extends ChiselEnum {
+  val Idle = Value
+  val Drive = Value
+  val Resp = Value
+}
+
+// Region mux that adapts LsuV3's single NoUser TileLink master port to the
+// core's legacy ibus (ITCM) / dbus (DTCM) / ebus (external + peripheral) buses.
+// Single outstanding: accept one A, drive the region's bus, capture the
+// response (1 cycle after the bus fires, matching LsuV2's readFired
+// convention), and answer on D.  Routing mirrors LsuV2 (Lsu.scala emitTxn-era
+// region decode): ITCM loads -> ibus, DTCM -> dbus, everything else -> ebus.
+class LsuTlulMux(p: Parameters) extends Module {
+  val tlp = new TLULParameters(p)
+  val lineBytes = tlp.w
+  val io = IO(new Bundle {
+    val tl = Flipped(
+        new TLULHost2Device(tlp, () => new NoUser, () => new NoUser))
+    val ibus = new IBusIO(p)
+    val dbus = new DBusIO(p)
+    val ebus = new EBusIO(p)
+  })
+
+  def inRegion(t: MemoryRegionType.Type, a: UInt): Bool =
+    p.m.filter(_.memType == t).map(_.contains(a)).reduceOption(_ || _)
+        .getOrElse(false.B)
+
+  val state = RegInit(LsuTlulMuxState.Idle)
+  val reqIsLoad = Reg(Bool())
+  val reqAddr = Reg(UInt(32.W))                 // line-aligned
+  val reqData = Reg(UInt((8 * lineBytes).W))
+  val reqMask = Reg(UInt(lineBytes.W))
+  val reqSource = Reg(UInt(tlp.o.W))
+  val reqTlSize = Reg(UInt(tlp.z.W))
+  val busSel = Reg(UInt(2.W))                   // 0 = ibus, 1 = dbus, 2 = ebus
+
+  // Region decode of the incoming A address.
+  val aAddr = io.tl.a.bits.address
+  val aIsLoad = io.tl.a.bits.opcode === TLULOpcodesA.Get.asUInt
+  val aItcm = inRegion(MemoryRegionType.IMEM, aAddr)
+  val aDtcm = inRegion(MemoryRegionType.DMEM, aAddr)
+  val aSel = Mux(aItcm && aIsLoad, 0.U, Mux(aDtcm, 1.U, 2.U))
+
+  // Mask-derived aligned byte address + access size for the ebus path
+  // (peripheral/external accesses care about the access size).
+  val offset = PriorityEncoder(reqMask)
+  val count = PopCount(reqMask)
+  val byteAddr = (reqAddr + offset)(31, 0)
+  val peri = inRegion(MemoryRegionType.Peripheral, reqAddr)
+
+  // ---- Defaults ----
+  io.tl.a.ready := false.B
+  io.tl.d.valid := false.B
+  io.tl.d.bits := 0.U.asTypeOf(io.tl.d.bits)
+
+  io.ibus.valid := false.B
+  io.ibus.addr := reqAddr
+
+  io.dbus.valid := false.B
+  io.dbus.write := !reqIsLoad
+  io.dbus.pc := 0.U
+  io.dbus.addr := reqAddr
+  io.dbus.adrx := reqAddr
+  io.dbus.size := lineBytes.U
+  io.dbus.wdata := reqData
+  io.dbus.wmask := reqMask
+
+  io.ebus.dbus.valid := false.B
+  io.ebus.dbus.write := !reqIsLoad
+  io.ebus.dbus.pc := 0.U
+  io.ebus.dbus.addr := byteAddr
+  io.ebus.dbus.adrx := reqAddr
+  io.ebus.dbus.size := count
+  io.ebus.dbus.wdata := reqData
+  io.ebus.dbus.wmask := reqMask
+  io.ebus.internal := peri
+
+  switch (state) {
+    is (LsuTlulMuxState.Idle) {
+      io.tl.a.ready := true.B
+      when (io.tl.a.fire) {
+        reqIsLoad := aIsLoad
+        reqAddr := aAddr
+        reqData := io.tl.a.bits.data
+        reqMask := io.tl.a.bits.mask
+        reqSource := io.tl.a.bits.source
+        reqTlSize := io.tl.a.bits.size
+        busSel := aSel
+        state := LsuTlulMuxState.Drive
+      }
+    }
+    is (LsuTlulMuxState.Drive) {
+      val fire = WireInit(false.B)
+      switch (busSel) {
+        is (0.U) { io.ibus.valid := true.B; fire := io.ibus.ready }
+        is (1.U) { io.dbus.valid := true.B; fire := io.dbus.ready }
+        is (2.U) { io.ebus.dbus.valid := true.B; fire := io.ebus.dbus.ready }
+      }
+      when (fire) { state := LsuTlulMuxState.Resp }
+    }
+    is (LsuTlulMuxState.Resp) {
+      // Read data is valid the cycle after the bus fired (TCM and ebus alike,
+      // per LsuV2's readFired timing).
+      val rdata = MuxLookup(busSel, io.dbus.rdata)(Seq(
+          0.U -> io.ibus.rdata, 1.U -> io.dbus.rdata, 2.U -> io.ebus.dbus.rdata))
+      val err = (busSel === 0.U && io.ibus.fault.valid) ||
+                (busSel === 2.U && io.ebus.fault.valid)
+      io.tl.d.valid := true.B
+      io.tl.d.bits.opcode := Mux(reqIsLoad,
+          TLULOpcodesD.AccessAckData.asUInt, TLULOpcodesD.AccessAck.asUInt)
+      io.tl.d.bits.param := 0.U
+      io.tl.d.bits.size := reqTlSize
+      io.tl.d.bits.source := reqSource
+      io.tl.d.bits.sink := 0.U
+      io.tl.d.bits.data := rdata
+      io.tl.d.bits.error := err
+      when (io.tl.d.fire) { state := LsuTlulMuxState.Idle }
+    }
+  }
+}
+
+// Drop-in replacement for LsuV2 that runs LsuV3 internally.  Presents the
+// legacy Lsu IO (ibus/dbus/ebus/flush/vldst) so SCore/CoreAxi are unchanged:
+// LsuV3's consolidated TL port is region-muxed back to the three buses, and a
+// small shim re-implements the fence/flush interface LsuV3 does not provide.
+class LsuV3Wrapper(p: Parameters) extends Lsu(p) {
+  val v3 = Module(new LsuV3(p))
+  val mux = Module(new LsuTlulMux(p))
+
+  // TL master -> region mux -> legacy buses.
+  mux.io.tl <> v3.io.tl
+  io.ibus <> mux.io.ibus
+  io.dbus <> mux.io.dbus
+  io.ebus <> mux.io.ebus
+
+  // vldst is unused (LsuV2 ties it off too).
+  io.vldst := 0.U
+
+  // Shared ports pass straight through.
+  v3.io.busPort := io.busPort
+  if (p.enableFloat) { v3.io.busPort_flt.get := io.busPort_flt.get }
+  io.rd := v3.io.rd
+  io.rd_flt := v3.io.rd_flt
+  io.fault := v3.io.fault
+  io.active := v3.io.active
+  io.queueCapacity := v3.io.queueCapacity
+  io.storeComplete := v3.io.storeComplete
+  if (p.enableRvv) {
+    v3.io.rvvState.get := io.rvvState.get
+    io.lsu2rvv.get <> v3.io.lsu2rvv.get
+    v3.io.rvv2lsu.get <> io.rvv2lsu.get
+  }
+
+  // ---- Fence/flush shim (lifted from LsuV2). ----
+  val flushCmd = RegInit(MakeInvalid(new FlushCmd))
+  io.flush.valid  := flushCmd.valid
+  io.flush.all    := flushCmd.bits.all
+  io.flush.clean  := true.B
+  io.flush.fencei := flushCmd.bits.fencei
+  io.flush.pcNext := flushCmd.bits.pcNext
+  flushCmd := MuxCase(flushCmd, Seq(
+    (io.req(0).fire && LsuOp.isFlush(io.req(0).bits.op))
+        -> MakeValid(true.B, FlushCmd(io.req(0).bits)),
+    (io.flush.valid && io.flush.ready) -> MakeInvalid(new FlushCmd),
+  ))
+
+  // Route req: fence/flush ops are consumed by the shim; others go to LsuV3.
+  // Accept gating mirrors LsuV2 (no new ops while a flush is pending).
+  for (i <- 0 until p.instructionLanes) {
+    val isFlushOp = LsuOp.isFlush(io.req(i).bits.op)
+    v3.io.req(i).valid := io.req(i).valid && !isFlushOp && !flushCmd.valid
+    v3.io.req(i).bits := io.req(i).bits
+    io.req(i).ready := Mux(isFlushOp, true.B, v3.io.req(i).ready) && !flushCmd.valid
+  }
+}
+
+@_root_.scala.annotation.nowarn
+object LsuV3Emitter extends App {
+  import _root_.circt.stage.{ChiselStage, FirtoolOption}
+  import chisel3.stage.ChiselGeneratorAnnotation
+  val p = new Parameters
+  // dlenb = axi2DataBytes = lsuDataBits/8 must equal vlenb (=16) so the TL
+  // beat matches the RVV beat; enableRvv exposes the rvv2lsu/lsu2rvv ports.
+  p.lsuDataBits = 128
+  p.enableRvv = true
+  (new ChiselStage).execute(
+    Array("--target", "systemverilog") ++ args,
+    Seq(ChiselGeneratorAnnotation(() => new LsuV3(p))) ++
+      Seq(FirtoolOption("-enable-layers=Verification"))
+  )
+}
