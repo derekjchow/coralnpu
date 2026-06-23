@@ -80,6 +80,9 @@ class Parameters(var m: Seq[MemoryRegion] = Seq(), val hartId: Int = 0, val xlen
   val rvvVlen = 128
   def rvvVlenb: Int = { rvvVlen / 8 }
 
+  // Enable VME (Zvt) non-tile state and mset* instructions. Requires enableRvv.
+  var enableVme = false
+
   def useRetirementBuffer: Boolean = { enableVerification }
 
   // Scalar Floating point
