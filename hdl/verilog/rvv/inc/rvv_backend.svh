@@ -79,6 +79,14 @@ typedef struct packed {
   RVVSEW                        sew;
   RVVLMUL                       lmul;
   RVVLMUL                       lmul_orig;
+`ifdef VME_ON
+  // VME (Zvt) non-tile state. Layout mirrors the mtype CSR
+  // (§15.1.1.2 of zvt-20260427): mtwiden[1:0], mtk[2:1] (literal spec bits
+  // 6:5; see plan note about the tk[2:0] vs 2-bit discrepancy), mtm[13:0].
+  logic [1:0]                   mtwiden;
+  logic [1:0]                   mtk;
+  logic [13:0]                  mtm;
+`endif
 } RVVConfigState;
 
 // Enum to encode the major opcode of the instruction. See "Section 5. Vector
