@@ -409,7 +409,7 @@ object GenerateCoreShimSource {
     // spec §15.1.1.2. Tied to 0 when ZVT_ON is not defined.
     coreInstantiation +=
       "`ifdef ZVT_ON\n" +
-      "  assign configMtype = {8'd0, config_state.tm, 3'd0, config_state.tk, 3'd0, config_state.mtwiden};\n" +
+      "  assign configMtype = {8'd0, 14'(config_state.tm), 3'd0, 2'(config_state.tk), 3'd0, config_state.mtwiden};\n" +
       "`else\n" +
       "  assign configMtype = 32'd0;\n" +
       "`endif\n"
@@ -523,6 +523,7 @@ class RvvCoreWrapper(p: Parameters) extends BlackBox with HasBlackBoxInline
   addResource("hdl/verilog/rvv/common/arb_round_robin.sv") // New
   addResource("hdl/verilog/rvv/common/barrel_shifter.sv")  // New
   addResource("hdl/verilog/rvv/common/handshake_ff.sv")  // New
+  addResource("hdl/verilog/rvv/common/handshake_multistage_ctrl.sv")
   addResource("hdl/verilog/rvv/common/handshake_multi_fifo.sv")  // New
   addResource("hdl/verilog/rvv/common/cdffr.sv")
   addResource("hdl/verilog/rvv/common/compressor_3to2.sv")
@@ -637,6 +638,26 @@ class RvvCoreWrapper(p: Parameters) extends BlackBox with HasBlackBoxInline
   addResource("hdl/verilog/rvv/design/rvv_backend_falu.sv")
   addResource("hdl/verilog/rvv/design/rvv_backend.sv")
   addResource("hdl/verilog/rvv/design/RvvCore.sv")
+  if (p.enableVme) {
+    addResource("hdl/verilog/rvv/design/Zvt/fp_absaddsub.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/fp_addfront.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/fp_align.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/fp_classifier.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/fp_mulfront.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/fp_rounding.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/zvt.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/zvt_acc.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/zvt_acc_reg.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/zvt_ctrl.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/zvt_pe_adder.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/zvt_pe_adder_fp_lane.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/zvt_pe_adder_int_lane.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/zvt_pe_array.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/zvt_pe_block.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/zvt_pe_mulbulk.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/zvt_pe_mulbulk_fp_lane.sv")
+    addResource("hdl/verilog/rvv/design/Zvt/zvt_pe_mulbulk_int_lane.sv")
+  }
   setInline("RvvCoreWrapper.sv",
             GenerateCoreShimSource(p.instructionLanes, p.rvvVlen, p.enableVme))
 }
