@@ -117,6 +117,15 @@ class RvvCompressedInstruction(p: Parameters) extends Bundle {
   def isMsetAny(): Bool =
       isMsetmtype() || isMsettn() || isMsettm() || isMsettk() || isMsetmtypei()
 
+  def isVtzero(): Bool = {
+    (opcode === RvvCompressedOpcode.RVVALU) &&
+        (funct3() === "b110".U) &&        // OPMVX
+        (funct6() === "b010000".U) &&     // VWRXUNARY0
+        (bits(18) === 1.U) &&             // vm = 1
+        (bits(17, 13) === "b11110".U) &&  // vs2 = VTZERO
+        (bits(12, 8) === "b00000".U)      // rs1 = 00000
+  }
+
   def isLoadStore(): Bool = {
     opcode.isOneOf(RvvCompressedOpcode.RVVLOAD, RvvCompressedOpcode.RVVSTORE)
   }
@@ -162,7 +171,7 @@ class RvvCompressedInstruction(p: Parameters) extends Bundle {
     // Scalar-write instructions (vmv.x.s, vcpop, vfirst, vfmv.f.s) also do not
     // write vector registers.
     opcode === RvvCompressedOpcode.RVVLOAD ||
-        (opcode === RvvCompressedOpcode.RVVALU && !writesRd() && !writesFrd())
+        (opcode === RvvCompressedOpcode.RVVALU && !writesRd() && !writesFrd() && !isVtzero())
   }
 
   override def toPrintable: Printable = {
