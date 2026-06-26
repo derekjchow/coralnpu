@@ -151,3 +151,47 @@ coralnpu_v2_binary(
     name = "vme_matmul_test_program",
     srcs = ["vme_matmul_test_program.cc"],
 )
+
+cocotb_test_suite(
+    name = "vme_matmul_tiled_test",
+    simulators = [
+        "verilator",
+        "vcs",
+    ],
+    testcases = [
+        "vme_matmul_tiled_test",
+    ],
+    testcases_vname = "VME_MATMUL_TILED_TEST_TESTCASES",
+    tests_kwargs = {
+        "waves": False,
+        "hdl_toplevel": "VmeCoreMiniAxi",
+        "seed": "42",
+        "test_module": ["vme_matmul_tiled_bench.py"],
+        "deps": [
+            "//coralnpu_test_utils:core_mini_axi_sim_interface",
+            "@bazel_tools//tools/python/runfiles",
+        ],
+        "data": [
+            ":vme_matmul_tiled_test_program",
+        ],
+        # Default N=64 takes a few minutes; bump category if N grows.
+        "size": "large",
+    },
+    vcs_build_args = VCS_BUILD_ARGS,
+    vcs_data = [
+        ":vme_matmul_tiled_test_program",
+        "//tests/cocotb:coverage_exclude.cfg",
+        "//hdl/verilog:dpi_files",
+    ],
+    vcs_defines = dict(VCS_DEFINES, ZVT_ON = ""),
+    vcs_test_args = VCS_TEST_ARGS,
+    vcs_verilog_sources = [
+        "//hdl/chisel/src/coralnpu:vme_core_mini_axi_cc_library_verilog",
+    ],
+    verilator_model = "//tests/cocotb:vme_core_mini_axi_model",
+)
+
+coralnpu_v2_binary(
+    name = "vme_matmul_tiled_test_program",
+    srcs = ["vme_matmul_tiled_test_program.cc"],
+)
