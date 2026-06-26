@@ -1263,8 +1263,8 @@ module rvv_backend_decode_unit_ari_de2
                   `ifdef ZVT_ON
                     VTMVVT: begin
                       vd_offset[i] = uop_index_current[i][`UOP_INDEX_WIDTH_ALU-1:0];
-                      vd_valid[i]  = inst_vs2[0]; 
-                    end   
+                      vd_valid[i]  = inst_vs2[0];
+                    end
                   `endif
                   endcase
                 end
@@ -2275,7 +2275,12 @@ module rvv_backend_decode_unit_ari_de2
     for(int i=0;i<`NUM_DE_UOP;i++) begin: PSHROB_VLD
       case(uop_exe_unit)
       `ifdef ZVT_ON
-        VME: pshrob_valid[i] = 1'b0;
+        // VME uops that only touch tile state (vtzero, vtmv.t.v) don't
+        // need a ROB slot. vtmv.v.t (VTMVVT) writes a vector register
+        // and MUST occupy an ROB entry so its VRF writeback can retire.
+        VME: pshrob_valid[i] = (inst_funct3 == OPMVX) &&
+                               (inst_funct6 == VWRXUNARY0) &&
+                               (vs2_opcode == VTMVVT);
       `endif
       `ifdef ZVE32F_ON
         FCMP,

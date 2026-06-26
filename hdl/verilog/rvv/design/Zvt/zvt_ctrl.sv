@@ -197,14 +197,22 @@ module zvt_ctrl (
     endcase
   end
 
+  // True only when the current uop actually has data to commit into the tile
+  // (vector->tile move or LSU load-into-tile). vtmv.v.t (isMv2Rvv) shares
+  // the EEW8/16/32 case bodies below for index computation, but its `vsrc`
+  // defaults to zero, so leaving its writeEn asserted would clobber the
+  // tile cell it just read. Gate the writeEn at the end of the always_comb.
+  logic tileWriteValid;
+  assign tileWriteValid = isMv2Vme || isLsu2Vme;
+
   // Move and LSU access ACC
   always_comb begin
     mvlsuReadAccIdx  = 'b0;
     mvlsuReadSubIdx  = 'b0;
-    mvlsuWriteEn     = 'b0;  
+    mvlsuWriteEn     = 'b0;
     mvlsuWriteAccIdx = 'b0;
     mvlsuWriteSubIdx = 'b0;
-    mvlsuWriteData   = 'b0;  
+    mvlsuWriteData   = 'b0;
 
     case(uop[0].eew_mt)
       EEW8: begin
@@ -369,6 +377,14 @@ module zvt_ctrl (
         end
       end
     endcase
+
+    // Suppress write enables when the current uop is not a vector->tile or
+    // LSU->tile move. The case bodies above compute writeEn unconditionally
+    // from bodyTn for index computation reasons, but vtmv.v.t (isMv2Rvv)
+    // would otherwise overwrite the tile cell it is draining with zeroes.
+    if (!tileWriteValid) begin
+      mvlsuWriteEn = 'b0;
+    end
   end
   
   generate

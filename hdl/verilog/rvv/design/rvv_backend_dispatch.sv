@@ -495,7 +495,12 @@ module rvv_backend_dispatch
             assign rs_dp2zvt[i].vl              = uop_uop2dp[i].vs_evl[$clog2(`TE):0];
             assign rs_dp2zvt[i].tk              = uop_uop2dp[i].vector_csr.tk;
             assign rs_dp2zvt[i].sew             = uop_uop2dp[i].vector_csr.sew;
-            assign rs_dp2zvt[i].eew_mt          = EEW_e'(uop_uop2dp[i].vector_csr.sew);
+            // Use the de2-computed mt_eew, not a raw cast of `sew`: the SEW
+            // enum (SEW8=0, SEW16=1, SEW32=2) and EEW enum (EEW_NONE=0, EEW1=1,
+            // EEW8=2, EEW16=3, EEW32=4) do not align, so `EEW_e'(sew)` silently
+            // mis-tags the move (e.g. SEW8 -> EEW_NONE), causing zvt_ctrl to
+            // fall through to its EEW32 default path for vtmv.v.t / vtmv.t.v.
+            assign rs_dp2zvt[i].eew_mt          = uop_uop2dp[i].mt_eew;
             assign rs_dp2zvt[i].rndMode         = fpnew_pkg::roundmode_e'(uop_uop2dp[i].vector_csr.frm);
             assign rs_dp2zvt[i].tss             = {uop_uop2dp[i].rs1_data[30:27],
                                                    uop_uop2dp[i].rs1_data[24],
@@ -535,7 +540,7 @@ module rvv_backend_dispatch
             assign uop_dp2rob[i].uop_pc         = uop_uop2dp[i].uop_pc; 
           `endif
             assign uop_dp2rob[i].w_index        = uop_uop2dp[i].dst_index;
-            assign uop_dp2rob[i].w_type         = uop_uop2dp[i].vd_valid ? VRF : 
+            assign uop_dp2rob[i].w_type         = uop_uop2dp[i].vd_valid ? VRF :
           `ifdef ZVE32F_ON
                                                   uop_uop2dp[i].fd_valid ? FRF :
           `endif

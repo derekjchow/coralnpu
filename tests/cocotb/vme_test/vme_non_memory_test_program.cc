@@ -44,6 +44,7 @@ void vme_msetmtype(uint32_t mtype_value, uint32_t vtype_value) {
 #define VME_VTMV_V_T_V16_T0() \
   asm volatile(".word 0x43f06857" ::: "memory")
 
+
 // vmmt.vv v1 (Tile 0, signed), v4, v8 (vd = 1, vs2 = 4, vs1 = 8)
 #define VME_VMMT_VV_T0_V4_V8() \
   asm volatile(".word 0xf24400d7" ::: "memory")
@@ -58,13 +59,21 @@ struct MatMulInputs {
 };
 
 struct TestOutputs {
-  uint32_t vtmv_v_t_result[4];  // Output of the simple VTMV test
+  uint32_t vtmv_v_t_result[4];  // Body bytes drained after vtzero (expect 0).
+  uint32_t vtmv_t_v_result[4];  // Body bytes from vtmv.t.v -> vtmv.v.t round-trip.
 };
 
 // Pre-poison with a non-zero pattern so the test cannot accidentally pass on
 // uninitialised zero memory.
 volatile TestOutputs test_outputs __attribute__((section(".data"), used)) = {
     .vtmv_v_t_result = {0xDEADBEEF, 0xDEADBEEF, 0xDEADBEEF, 0xDEADBEEF},
+    .vtmv_t_v_result = {0xDEADBEEF, 0xDEADBEEF, 0xDEADBEEF, 0xDEADBEEF},
+};
+
+// Source pattern for the vtmv.t.v round-trip. Picked so each body byte is
+// distinct, monotonic, and recognisable in waveforms.
+volatile uint8_t vtmv_t_v_input[4] __attribute__((section(".data"), used)) = {
+    0x11, 0x22, 0x33, 0x44,
 };
 
 int main() {
@@ -77,17 +86,22 @@ int main() {
   // vl=4 satisfies check_tn for both vtzero and vtmv.v.t.
   asm volatile("vsetivli zero, 4, e8, m4, ta, ma");
 
-  // Clear accumulator tile 0.
+  // Stage 1: vtzero -> vtmv.v.t. Drained body must be all-zero.
   VME_VTZERO_T0();
-
-  // Drain tile 0 (row 0) into v12.
   VME_VTMV_V_T_V12_T0();
-
-  // Store the 4-element body of v12 so cocotb can verify all-zero. Tail bytes
-  // (ta=1) are not asserted on.
   asm volatile("vse8.v v12, (%0)"
                :
                : "r"(&test_outputs.vtmv_v_t_result[0])
+               : "memory");
+
+  // Stage 2: vle8 -> vtmv.t.v -> vtmv.v.t round-trip. The drained body must
+  // match the input pattern.
+  asm volatile("vle8.v v8, (%0)" : : "r"(vtmv_t_v_input));
+  VME_VTMV_T_V_V8_T0();
+  VME_VTMV_V_T_V16_T0();
+  asm volatile("vse8.v v16, (%0)"
+               :
+               : "r"(&test_outputs.vtmv_t_v_result[0])
                : "memory");
 
   return 0;

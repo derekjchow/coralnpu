@@ -33,16 +33,23 @@ module zvt_acc (
   logic [`NUM_ACC-1:0][`NUM_SUBTILE-1:0][`SUBTILE_SIZE*8-1:0] wdata;
   logic [`NUM_ACC-1:0][`NUM_SUBTILE-1:0][`SUBTILE_SIZE*8-1:0] acc;
 
-  always_comb begin 
-    wen      = 'b0; 
+  always_comb begin
+    wen      = 'b0;
     wdata    = 'b0;
-    readData = 'b0; 
+    readData = 'b0;
 
     for(int i=0; i<`NUM_BLK; i++) begin: block_addr
       for(int j=0; j<`NUM_BLKPORT; j++) begin: block_subtile_addr
         // write
-        wen[  writeAccIdx[i][j]][writeSubIdx[i][j]] = writeEn[i][j];
-        wdata[writeAccIdx[i][j]][writeSubIdx[i][j]] = writeData[i][j];
+        // Multiple (i,j) entries can map to the same (acc, sub) slot, and the
+        // unused entries default to writeAccIdx=0, writeSubIdx=0, writeEn=0.
+        // A blind "last writer wins" assignment lets those zero entries stomp
+        // the valid write from a lower (i,j). Guard on writeEn so only entries
+        // actually requesting a write contribute.
+        if (|writeEn[i][j]) begin
+          wen[  writeAccIdx[i][j]][writeSubIdx[i][j]] = writeEn[i][j];
+          wdata[writeAccIdx[i][j]][writeSubIdx[i][j]] = writeData[i][j];
+        end
         // read
         readData[i][j] = acc[readAccIdx[i][j]][readSubIdx[i][j]];
       end

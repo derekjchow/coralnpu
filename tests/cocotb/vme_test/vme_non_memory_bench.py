@@ -14,9 +14,9 @@
 
 """Cocotb test bench for VME (Zvt) non-memory instructions.
 
-Runs vme_non_memory_test_program.cc which configures the matrix unit, zeroes
-tile 0 (`vtzero`), drains tile 0 row 0 into v12 (`vtmv.v.t`), and stores the
-v12 body to memory. This bench asserts the body is all-zero.
+Runs vme_non_memory_test_program.cc, which exercises two stages:
+  1. vtzero -> vtmv.v.t: drained body must be all-zero.
+  2. vle8 -> vtmv.t.v -> vtmv.v.t: round-trip must preserve the input pattern.
 """
 
 import cocotb
@@ -27,7 +27,7 @@ from bazel_tools.tools.python.runfiles import runfiles
 
 @cocotb.test()
 async def vme_non_memory_test(dut):
-  """vtzero → vtmv.v.t round-trip should produce a zero vector."""
+  """vtzero -> vtmv.v.t -> zeros; vtmv.t.v -> vtmv.v.t round-trip preserved."""
 
   core_mini_axi = CoreMiniAxiInterface(dut)
   await core_mini_axi.init()
@@ -50,11 +50,21 @@ async def vme_non_memory_test(dut):
   await core_mini_axi.wait_for_halted()
 
   # Body = vl(4) * EEW(8b) = 4 bytes. Tail bytes are ta=1 (unspecified) and
-  # are not asserted on.
-  raw = await core_mini_axi.read(result_addr, 4)
-  body = np.frombuffer(raw, dtype=np.uint8)
-  cocotb.log.info(f"vtmv.v.t body bytes: {body.tolist()}")
-  for i, b in enumerate(body):
+  # are not asserted on. TestOutputs layout: vtmv_v_t_result[16] then
+  # vtmv_t_v_result[16] (the second field begins 16 bytes in).
+  raw_zero = await core_mini_axi.read(result_addr, 4)
+  body_zero = np.frombuffer(raw_zero, dtype=np.uint8)
+  cocotb.log.info(f"stage 1 (vtzero) drained body: {body_zero.tolist()}")
+  for i, b in enumerate(body_zero):
     assert b == 0, (
         f"vtmv.v.t body[{i}] = 0x{b:02x}, expected 0x00 after vtzero")
-  cocotb.log.info("[VME] vtzero -> vtmv.v.t round-trip produced zeros")
+
+  raw_rt = await core_mini_axi.read(result_addr + 16, 4)
+  body_rt = np.frombuffer(raw_rt, dtype=np.uint8)
+  expected_rt = [0x11, 0x22, 0x33, 0x44]
+  cocotb.log.info(f"stage 2 (vtmv.t.v round-trip) drained body: {body_rt.tolist()}")
+  for i, (b, e) in enumerate(zip(body_rt, expected_rt)):
+    assert b == e, (
+        f"vtmv.t.v round-trip body[{i}] = 0x{b:02x}, expected 0x{e:02x}")
+
+  cocotb.log.info("[VME] vtzero/vtmv.v.t/vtmv.t.v all passed")

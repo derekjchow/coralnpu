@@ -126,19 +126,18 @@ class RvvCompressedInstruction(p: Parameters) extends Bundle {
         (bits(12, 8) === "b00000".U)      // rs1 = 00000
   }
 
-  // vtmv.v.t (Zvt §15.1.1.7): funct6=010000, vm=1, vs2=11111, funct3=110.
-  // vd is a vector register, but the vendor backend's retire path does not
-  // currently propagate the writeback to the Chisel-side scoreboard. Treat
-  // it like vtzero (suppress the vrf-pending mark) so the retirement buffer
-  // can drain. Vector-to-vector ordering is enforced by the RVV unit's
-  // internal scoreboard.
-  def isVtmvVt(): Bool = {
+  // vtmv.t.v (Zvt §15.1.1.7): funct6=010111 (VCOMPRESS_VTMVTV alias),
+  // vm=1, vs2=source vector, rs1=TSS, funct3=110, vd=00000 (hardcoded).
+  // Destination is a matrix tile, not a vector register, so suppress the
+  // Chisel-side vrf-pending mark on the encoded vd=0 (which would otherwise
+  // wedge the retirement buffer waiting for a writeback that never comes).
+  def isVtmvTv(): Bool = {
     (opcode === RvvCompressedOpcode.RVVALU) &&
         (funct3() === "b110".U) &&        // OPMVX
-        (funct6() === "b010000".U) &&     // VWRXUNARY0
-        (bits(18) === 1.U) &&             // vm = 1
-        (bits(17, 13) === "b11111".U)     // vs2 = VTMVVT
+        (funct6() === "b010111".U) &&     // VCOMPRESS_VTMVTV
+        (bits(18) === 1.U)                // vm = 1
   }
+
 
   def isLoadStore(): Bool = {
     opcode.isOneOf(RvvCompressedOpcode.RVVLOAD, RvvCompressedOpcode.RVVSTORE)
@@ -185,7 +184,7 @@ class RvvCompressedInstruction(p: Parameters) extends Bundle {
     // Scalar-write instructions (vmv.x.s, vcpop, vfirst, vfmv.f.s) also do not
     // write vector registers.
     opcode === RvvCompressedOpcode.RVVLOAD ||
-        (opcode === RvvCompressedOpcode.RVVALU && !writesRd() && !writesFrd() && !isVtzero() && !isVtmvVt())
+        (opcode === RvvCompressedOpcode.RVVALU && !writesRd() && !writesFrd() && !isVtzero() && !isVtmvTv())
   }
 
   override def toPrintable: Printable = {
