@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Cocotb test bench for VME (Zvt) non-memory instructions (Phase 1).
+"""Cocotb test bench for VME (Zvt) non-memory instructions.
 
-Runs vme_non_memory_test_program.cc which zeroes a tile, moves vector register
-to the tile, and reads it back, then verifies the output.
+Runs vme_non_memory_test_program.cc which configures the matrix unit, zeroes
+tile 0 (`vtzero`), drains tile 0 row 0 into v12 (`vtmv.v.t`), and stores the
+v12 body to memory. This bench asserts the body is all-zero.
 """
 
 import cocotb
@@ -26,7 +27,7 @@ from bazel_tools.tools.python.runfiles import runfiles
 
 @cocotb.test()
 async def vme_non_memory_test(dut):
-  """Drive a program exercising non-memory Zvt instructions and check result."""
+  """vtzero → vtmv.v.t round-trip should produce a zero vector."""
 
   core_mini_axi = CoreMiniAxiInterface(dut)
   await core_mini_axi.init()
@@ -48,17 +49,12 @@ async def vme_non_memory_test(dut):
   await core_mini_axi.execute_from(entry_point)
   await core_mini_axi.wait_for_halted()
 
-  # Pull results back: 4 uint32 words.
-  #raw = await core_mini_axi.read(result_addr, 4 * 4)
-  #results = np.frombuffer(raw, dtype=np.uint32)
-
-  #expected = [0x11111111, 0x22222222, 0x33333333, 0x44444444]
-  #cocotb.log.info(f"Expected: {[hex(x) for x in expected]}")
-  #cocotb.log.info(f"Actual:   {[hex(x) for x in results]}")
-
-  #for i in range(4):
-  #  assert results[i] == expected[i], (
-  #      f"Mismatch at index {i}: got 0x{results[i]:08x}, "
-  #      f"expected 0x{expected[i]:08x}")
-
-  #cocotb.log.info("[VME] Phase 1 (Data Movement) Passed!")
+  # Body = vl(4) * EEW(8b) = 4 bytes. Tail bytes are ta=1 (unspecified) and
+  # are not asserted on.
+  raw = await core_mini_axi.read(result_addr, 4)
+  body = np.frombuffer(raw, dtype=np.uint8)
+  cocotb.log.info(f"vtmv.v.t body bytes: {body.tolist()}")
+  for i, b in enumerate(body):
+    assert b == 0, (
+        f"vtmv.v.t body[{i}] = 0x{b:02x}, expected 0x00 after vtzero")
+  cocotb.log.info("[VME] vtzero -> vtmv.v.t round-trip produced zeros")
