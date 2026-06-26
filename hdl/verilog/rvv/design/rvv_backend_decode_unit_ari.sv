@@ -1519,6 +1519,16 @@ module rvv_backend_decode_unit_ari
           `ifdef ZVT_ON
             else if(vs2_opcode==VTMVVT) begin
               case(csr_lmul)
+                LMUL1_4,
+                LMUL1_2,
+                LMUL1: begin
+                  // Drain a single tile row into one v register; no
+                  // stripmining. Added so vtmv.v.t can be issued without
+                  // running into the LMUL>=2 uop-stripmine + isMv2Rvv-only-
+                  // acks-uop[0] wedge in zvt_ctrl.
+                  emul_vd       = EMUL1;
+                  emul_max      = EMUL1;
+                end
                 LMUL4: begin
                   case(csr_sew)
                     SEW8: begin
@@ -3530,7 +3540,10 @@ module rvv_backend_decode_unit_ari
 
         `ifdef ZVT_ON
           VT_F_MMTVV: begin
-            check_special = inst_vm&check_tm&check_tn&check_tk&check_mtd_align;
+            // Per Zvt §15.1.1.8 matrix arith traps on non-zero vstart.
+            // Mirrors the OPIVV arm at line 3147-3151 which already gates on
+            // (csr_vstart=='b0).
+            check_special = inst_vm&check_tm&check_tn&check_tk&check_mtd_align&(csr_vstart=='b0);
           end
         `endif
         endcase

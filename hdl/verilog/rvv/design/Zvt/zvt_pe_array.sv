@@ -250,12 +250,22 @@ module zvt_pe_array (
     endcase
   end
   
-  assign vaInfoLo.va     = vaGroupLo;
-  assign vaInfoLo.vaMask = vaMaskLo;
+  // M-direction stripmining: vaInfo.va only carries ROWS_PER_CNT = TE/2*COMPRATIO
+  // rows per cycle. The pe_array advances cnt to walk through tm rows in
+  // ROWS_PER_CNT-sized chunks; this mux picks the correct chunk of vaGroup{Lo,Hi}
+  // for the current cnt. Without this slice, every cnt cycle re-multiplied
+  // rows 0..ROWS_PER_CNT-1.
+  localparam ROWS_PER_CNT = `TE/2*`COMPRATIO;
+  always_comb begin
+    for (int k = 0; k < ROWS_PER_CNT; k++) begin
+      vaInfoLo.va[k]     = vaGroupLo[k + ROWS_PER_CNT * cnt];
+      vaInfoLo.vaMask[k] = vaMaskLo[k + ROWS_PER_CNT * cnt];
+      vaInfoHi.va[k]     = vaGroupHi[k + ROWS_PER_CNT * cnt];
+      vaInfoHi.vaMask[k] = vaMaskHi[k + ROWS_PER_CNT * cnt];
+    end
+  end
   assign vbInfoLo.vb     = vbGroupLo;
   assign vbInfoLo.vbMask = vbMaskLo;
-  assign vaInfoHi.va     = vaGroupHi;
-  assign vaInfoHi.vaMask = vaMaskHi;
   assign vbInfoHi.vb     = vbGroupHi;
   assign vbInfoHi.vbMask = vbMaskHi;
 

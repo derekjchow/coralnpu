@@ -76,34 +76,38 @@ module zvt_pe_block (
   assign mulbulkTag.readAccId  = blkCmd.vaInfo.readAccId;
 
   // instance mul+bulk-normalization
+  //
+  // Each PE block has ROWS_PER_CNT = TE/2*COMPRATIO adder rows. For tm
+  // values larger than ROWS_PER_CNT, the pe_array stripmines M across cnt
+  // cycles and pre-slices vaGroupLo to deliver the correct rows per cycle.
   for(genvar i=0; i<`TE/2*`COMPRATIO; i++) begin: mul_bulk_row
     for(genvar j=0; j<`TE/2; j++) begin: mul_bulk_col
       assign maskIn[i][j] = blkCmd.vaInfo.vaMask[i]&blkCmd.vbInfo.vbMask[j];
-      
+
       if ((i==0)&(j==0)) begin
         zvt_pe_mulbulk #(
-          .FP_FMT_CONFIG    (5'b10001),  
+          .FP_FMT_CONFIG    (5'b10001),
           `ifdef ZVTI16I32_ON
           .INT_FMT_CONFIG   (2'b11),
           `else
           .INT_FMT_CONFIG   (2'b01),
           `endif
           .NUM_PIPE_REGS    (MULBULKPIPENUM),
-          .PIPE_CONFIG      (fpnew_pkg::DISTRIBUTED),  
+          .PIPE_CONFIG      (fpnew_pkg::DISTRIBUTED),
           .TAG_TYPE         (MULBULKTAG_t),
           .REMV_PIPE_BUBBLE (REMVPIPEBUBB)
         ) peMulBulk (
           .clk            (clk),
           .rst_n          (rst_n),
           // Input signals
-          .operands       ({blkCmd.vaInfo.va[i], blkCmd.vbInfo.vb[j]}),   
-          .rnd_mode       (blkCmd.vaInfo.rndMode),   
-          .op             (blkCmd.vaInfo.op),         
-          .op_mod         (blkCmd.vaInfo.opMod),     
-          .fsrc_fmt       (blkCmd.vaInfo.fsrcFmt),   
-          .isrc_fmt       (blkCmd.vaInfo.isrcFmt),   
-          .fdst_fmt       (blkCmd.vaInfo.fdstFmt),   
-          .idst_fmt       (blkCmd.vaInfo.idstFmt),   
+          .operands       ({blkCmd.vaInfo.va[i], blkCmd.vbInfo.vb[j]}),
+          .rnd_mode       (blkCmd.vaInfo.rndMode),
+          .op             (blkCmd.vaInfo.op),
+          .op_mod         (blkCmd.vaInfo.opMod),
+          .fsrc_fmt       (blkCmd.vaInfo.fsrcFmt),
+          .isrc_fmt       (blkCmd.vaInfo.isrcFmt),
+          .fdst_fmt       (blkCmd.vaInfo.fdstFmt),
+          .idst_fmt       (blkCmd.vaInfo.idstFmt),
           .in_tag         (mulbulkTag),
           .mask           (maskIn[i][j]),
           // Input Handshake
@@ -122,27 +126,27 @@ module zvt_pe_block (
         );
       end else begin
         zvt_pe_mulbulk #(
-          .FP_FMT_CONFIG    (5'b10001),  
+          .FP_FMT_CONFIG    (5'b10001),
           `ifdef ZVTI16I32_ON
           .INT_FMT_CONFIG   (2'b11),
           `else
           .INT_FMT_CONFIG   (2'b01),
           `endif
           .NUM_PIPE_REGS    (MULBULKPIPENUM),
-          .PIPE_CONFIG      (fpnew_pkg::DISTRIBUTED),  
+          .PIPE_CONFIG      (fpnew_pkg::DISTRIBUTED),
           .REMV_PIPE_BUBBLE (REMVPIPEBUBB)
         ) peMulBulk (
           .clk            (clk),
           .rst_n          (rst_n),
           // Input signals
-          .operands       ({blkCmd.vaInfo.va[i], blkCmd.vbInfo.vb[j]}),   
-          .rnd_mode       (blkCmd.vaInfo.rndMode),   
-          .op             (blkCmd.vaInfo.op),         
-          .op_mod         (blkCmd.vaInfo.opMod),     
-          .fsrc_fmt       (blkCmd.vaInfo.fsrcFmt),   
-          .isrc_fmt       (blkCmd.vaInfo.isrcFmt),   
-          .fdst_fmt       (blkCmd.vaInfo.fdstFmt),   
-          .idst_fmt       (blkCmd.vaInfo.idstFmt),   
+          .operands       ({blkCmd.vaInfo.va[i], blkCmd.vbInfo.vb[j]}),
+          .rnd_mode       (blkCmd.vaInfo.rndMode),
+          .op             (blkCmd.vaInfo.op),
+          .op_mod         (blkCmd.vaInfo.opMod),
+          .fsrc_fmt       (blkCmd.vaInfo.fsrcFmt),
+          .isrc_fmt       (blkCmd.vaInfo.isrcFmt),
+          .fdst_fmt       (blkCmd.vaInfo.fdstFmt),
+          .idst_fmt       (blkCmd.vaInfo.idstFmt),
           .in_tag         ('0),
           .mask           (maskIn[i][j]),
           // Input Handshake
@@ -346,8 +350,12 @@ module zvt_pe_block (
     for(int i=0; i<`TE/2*`COMPRATIO; i++) begin
       for(int j=0; j<`TE/2; j++) begin
         writeAccIdx[(`TE/4)*(i/2)+(j/2)] = {adderTag[ADDERPIPENUM].writeAccIdx[3:2], BLKID[1], j[1]};
+        // Stripmine subIdx by writeAccId so multi-cycle (tm > TE/2*COMPRATIO)
+        // dispatches land in different subtiles. The original `*+i/2`
+        // collapsed to 0 for i<2 (i/2=0), so cnt=1+ would overwrite cnt=0.
+        // Matches the symmetric READ formula at line ~246.
         writeSubIdx[(`TE/4)*(i/2)+(j/2)] = ($clog2(`NUM_SUBTILE))'(`TE/8)*BLKID[0]+
-                                         (`TE/4)*(`TE/4*`COMPRATIO*adderTag[ADDERPIPENUM].writeAccId*+i/2)+(j/4);
+                                         (`TE/4)*(`TE/4*`COMPRATIO*adderTag[ADDERPIPENUM].writeAccId+i/2)+(j/4);
         writeEn[(`TE/4)*(i/2)+(j/2)][{i[0],j[0]}*4 +: 4] = {4{adderResVld[i][j]&&adderResRdy}};
         writeData[(`TE/4)*(i/2)+(j/2)][{i[0],j[0]}*`WORD_WIDTH +: `WORD_WIDTH] = adderRes[i][j];
       end

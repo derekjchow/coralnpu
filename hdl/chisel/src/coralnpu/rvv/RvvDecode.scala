@@ -60,9 +60,11 @@ class RvvCompressedInstruction(p: Parameters) extends Bundle {
   }
 
   // These instructions need to trap when vstart is not zero. This includes
-  // all reduction instructions.
+  // all reduction instructions and the Zvt matrix-arithmetic family
+  // (§15.1.1.8 mandates the trap).
   def requireZeroVstart(): Bool = {
-    (opcode === RvvCompressedOpcode.RVVALU) && (funct3() === "b010".U) &&
+    isMatrixArith() ||
+    ((opcode === RvvCompressedOpcode.RVVALU) && (funct3() === "b010".U) &&
         // OPMVV
         MuxLookup(funct6(), false.B)(Seq(
             "b000000".U -> true.B,  // vredsum
@@ -86,7 +88,7 @@ class RvvCompressedInstruction(p: Parameters) extends Bundle {
             "b010111".U -> true.B,  // vcompress
             "b110000".U -> true.B,  // vwredsumu
             "b110001".U -> true.B,  // vwredsum
-        ))
+        )))
   }
 
   // "Addressing Mode" for loads/store (see Section 7.2 of RVV Spec)
@@ -138,6 +140,19 @@ class RvvCompressedInstruction(p: Parameters) extends Bundle {
         (bits(18) === 1.U)                // vm = 1
   }
 
+  // Zvt matrix-arithmetic family (§15.1.1.8): vtfmm.tvv, vtfmm.alt.tvv,
+  // vtmmu.tvv, vtmms.tvv. funct6=111100, vm=1, funct3=001 (OPFVV) or 000
+  // (OPIVV); bit 7 (the LSB of the encoded vd field) selects the alt/signed
+  // sub-mnemonic and is handled in the vendor PE array, not at this layer.
+  // The destination is a matrix tile (mtd in rd[4:1]), NOT a vector
+  // register, so suppress the vrf-pending mark same as vtzero / vtmv.t.v.
+  def isMatrixArith(): Bool = {
+    (opcode === RvvCompressedOpcode.RVVALU) &&
+        (funct6() === "b111100".U) &&     // VT_F_MMTVV
+        (bits(18) === 1.U) &&             // vm = 1
+        ((funct3() === "b000".U) || (funct3() === "b001".U))  // OPIVV or OPFVV
+  }
+
 
   def isLoadStore(): Bool = {
     opcode.isOneOf(RvvCompressedOpcode.RVVLOAD, RvvCompressedOpcode.RVVSTORE)
@@ -184,7 +199,7 @@ class RvvCompressedInstruction(p: Parameters) extends Bundle {
     // Scalar-write instructions (vmv.x.s, vcpop, vfirst, vfmv.f.s) also do not
     // write vector registers.
     opcode === RvvCompressedOpcode.RVVLOAD ||
-        (opcode === RvvCompressedOpcode.RVVALU && !writesRd() && !writesFrd() && !isVtzero() && !isVtmvTv())
+        (opcode === RvvCompressedOpcode.RVVALU && !writesRd() && !writesFrd() && !isVtzero() && !isVtmvTv() && !isMatrixArith())
   }
 
   override def toPrintable: Printable = {
@@ -213,6 +228,12 @@ object RvvCompressedInstruction {
       "b0000111".U -> MakeValid(validWidth, RvvCompressedOpcode.RVVLOAD),
       "b0100111".U -> MakeValid(validWidth, RvvCompressedOpcode.RVVSTORE),
       "b1010111".U -> MakeValid(RvvCompressedOpcode.RVVALU),
+      // OP-VE: Zvt matrix-arithmetic (vtfmm.tvv, vtfmm.alt.tvv, vtmmu.tvv,
+      // vtmms.tvv). The vendor backend dispatches by funct6/funct3 and does
+      // not re-check the major opcode, so it is safe to fold these into
+      // RVVALU; trap-PC display will reconstruct the encoding as 1010111
+      // (cosmetic only).
+      "b1110111".U -> MakeValid(RvvCompressedOpcode.RVVALU),
     ))
 
     // Fancy way to MakeValid.

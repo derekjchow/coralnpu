@@ -111,7 +111,7 @@ module fp_mulfront#(
   // 2. Adjust to P=1
   //    S'(P=1)=S(P=2), E'=E0+1
   // merge 1&2
-  wire [IN_SIG_BITS*2-1:0] prod_significand_raw = {(IN_SIG_BITS)'('b0), a_significand} * {(IN_SIG_BITS)'('b0), a_significand};
+  wire [IN_SIG_BITS*2-1:0] prod_significand_raw = {(IN_SIG_BITS)'('b0), a_significand} * {(IN_SIG_BITS)'('b0), b_significand};
   assign prod_exponent_raw =  // add MSB +1 bits, sign +1 bits -> total +2
     {2'b0, a_exponent + a_is_subnormal} + {2'b0, b_exponent + b_is_subnormal} - BIAS + 1;
 
