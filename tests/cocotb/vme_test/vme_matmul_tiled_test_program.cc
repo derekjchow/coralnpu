@@ -102,18 +102,27 @@ int main() {
       // add into mt0; pointers walk row-by-row through A^T and B.
       //
       // KNOWN BUG: under K>=4 back-to-back vtfmm.tvv with reused vs1/vs2
-      // (v8, v12), the 4th iteration reads stale operands (the dispatch
-      // operand bypass does not wait for the prior vtfmm to release its
-      // vs1/vs2 read before the next vle32.v overwrites them). Repro:
-      // identity-matrix matmul at N=4 gives mt0[3,2]=1, mt0[3,3]=0
-      // instead of the expected identity. Suspected vendor scoreboard
-      // miss in rvv_backend_dispatch.sv / rvv_backend_dispatch_operand.sv
-      // for VT_F_MMTVV reads -- see vme_matmul_tiled_bench.py.
+      // (v8, v12), the 4th iteration reads stale operands. The wave shows
+      // VRF.v12 only ever gets the k=0, k=1, k=2 vle writebacks -- the
+      // k=3 vle32.v v12 dispatches but its LSU writeback is silently
+      // dropped, so v12 holds e_2 when vtfmm (k=3) reads it. Attempted
+      // RTL fixes (rvv_backend_dispatch RAW stability filter, dispatch
+      // bypass ordering, lsu_remap addr-match gate, LSU opQueue depth,
+      // DISPATCH3->DISPATCH2, Chisel writesVectorRegister exclusion)
+      // and test-side workarounds (vmv.x.s drain, scalar fences, nops,
+      // dummy vle absorbers, rotating distinct vreg pairs per iter) all
+      // failed -- the LSU writeback path under K>=4 back-to-back load
+      // pressure needs deeper vendor surgery than fits this session.
+      // Per-iteration scratch buffer for the vse32.v drain trick below.
+      static volatile uint32_t _scratch[16]
+          __attribute__((section(".extbss"), used));
       const float* a_ptr = (const float*)&A_T[m_tile * TILE];
       const float* b_ptr = (const float*)&B[n_tile * TILE];
       for (int k = 0; k < MATMUL_N; k++) {
         asm volatile("vle32.v v8, (%0)" : : "r"(a_ptr) : "memory");
+        asm volatile("vse32.v v8, (%0)" : : "r"(_scratch) : "memory");
         asm volatile("vle32.v v12, (%0)" : : "r"(b_ptr) : "memory");
+        asm volatile("vse32.v v12, (%0)" : : "r"(_scratch) : "memory");
         VME_VTFMM_TVV_T0_V8_V12();
         a_ptr += MATMUL_N;
         b_ptr += MATMUL_N;
