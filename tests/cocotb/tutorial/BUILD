@@ -22,6 +22,8 @@ load(
     "VCS_TEST_ARGS",
 )
 
+package(default_visibility = ["//visibility:public"])
+
 # BEGIN_TESTCASES_FOR_tutorial
 TUTORIAL_TESTCASES = [
     "core_mini_axi_tutorial",

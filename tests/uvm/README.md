@@ -116,3 +116,24 @@ Note: the simulators exit 0 regardless of the UVM verdict, so
 `uvm_test_runner.sh` derives pass/fail from the log (`** UVM TEST
 PASSED **`, `UVM TEST FAILED`, and the `UVM_FATAL` count).
 
+## Pass criteria caveats
+
+* A program returning nonzero from `main()` ends in `ebreak` → DUT fault,
+  and the report phase treats a faulted run with no cosim mismatch as
+  PASS. Functional self-check failures can therefore slip through; the
+  MPACT comparison of every retired instruction is the real check in
+  this bench.
+* Tests that never halt end on timeout, which counts as PASS when no
+  cosim mismatch occurred. In the current suite that applies to
+  `base_test_nop`, `base_test_stress` (long-running by design) and
+  `base_test_registers` (parks in `wfi`; the bench's random IRQ pulses
+  do not complete its wake-to-`mpause` path). All other tests end on a
+  clean DUT halt.
+
+## Excluded programs
+
+Not portable to this bench: `rvv_matmul*` / `tflite_micro_test` /
+`freertos_app` (need highmem TCMs), `ddr_test` (external memory),
+`timer_interrupt_test` / `software_interrupt_test` / `plic_test`
+(need CLINT/PLIC), `//third_party/riscv-tests` (no per-ELF targets,
+different link flow).

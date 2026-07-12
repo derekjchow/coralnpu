@@ -103,5 +103,92 @@ uvm_test_suite(
         "base_test_nop": {
             "elf": "//tests/cocotb:nop_test.elf",
         },
+        # Scalar
+        "base_test_math": {
+            "elf": "//tests/cocotb:math.elf",
+        },
+        "base_test_registers": {
+            "elf": "//tests/cocotb:registers.elf",
+        },
+        "base_test_stress": {
+            "elf": "//tests/cocotb:stress_test.elf",
+            "timeout_ns": 1000000,
+        },
+        "base_test_tutorial": {
+            "elf": "//tests/cocotb/tutorial:coralnpu_v2_program.elf",
+        },
+        # Float (F extension)
+        "base_test_frm": {
+            "elf": "//tests/cocotb:frm_test.elf",
+        },
+        "base_test_float_csr_interlock": {
+            "elf": "//tests/cocotb:float_csr_interlock_test.elf",
+        },
+        # Zicsr / counters
+        "base_test_csr": {
+            "elf": "//tests/cocotb/csr_test:csr_test_program.elf",
+        },
+        "base_test_minstret": {
+            "elf": "//tests/cocotb:minstret_test.elf",
+        },
+        # RVV core ops
+        "base_test_rvv_add": {
+            "elf": "//tests/cocotb/rvv:rvv_add.elf",
+        },
+        "base_test_rvv_load": {
+            "elf": "//tests/cocotb/rvv:rvv_load.elf",
+        },
+        "base_test_vcsr": {
+            "elf": "//tests/cocotb/rvv:vcsr_test.elf",
+        },
+        "base_test_vsetvl": {
+            "elf": "//tests/cocotb/rvv:vsetvl_test.elf",
+        },
+        # RVV arithmetic sample (SEW/op/type variety)
+        "base_test_rvv_add_int8_m1": {
+            "elf": "//tests/cocotb/rvv/arithmetics:rvv_add_int8_m1.elf",
+        },
+        "base_test_rvv_aadd_int16_m1": {
+            "elf": "//tests/cocotb/rvv/arithmetics:rvv_aadd_int16_m1.elf",
+        },
+        "base_test_rvv_mul_int32_m1": {
+            "elf": "//tests/cocotb/rvv/arithmetics:rvv_mul_int32_m1.elf",
+        },
+        "base_test_rvv_smul_int32_m1": {
+            "elf": "//tests/cocotb/rvv/arithmetics:rvv_smul_int32_m1.elf",
+        },
+        "base_test_rvv_fadd_rne_m1": {
+            "elf": "//tests/cocotb/rvv/arithmetics:rvv_fadd_float_rne_m1.elf",
+        },
+        "base_test_rvv_redsum_int16_m1": {
+            "elf": "//tests/cocotb/rvv/arithmetics:rvv_redsum_int16_m1.elf",
+        },
+        "base_test_rvv_widen_add": {
+            "elf": "//tests/cocotb/rvv/arithmetics:rvv_widen_add_int8_int16.elf",
+        },
+        "base_test_vnclip": {
+            "elf": "//tests/cocotb/rvv/arithmetics:vnclip_test.elf",
+        },
+        # RVV load/store sample (unit-masked, strided, indexed-segment)
+        "base_test_ls_unit_masked": {
+            "elf": "//tests/cocotb/rvv/load_store:load_unit_masked.elf",
+        },
+        "base_test_ls_stride2": {
+            "elf": "//tests/cocotb/rvv/load_store:load8_stride2_m1.elf",
+        },
+        "base_test_ls_index_seg": {
+            "elf": "//tests/cocotb/rvv/load_store:load32_index32_seg.elf",
+        },
+        "base_test_ls_store_masked": {
+            "elf": "//tests/cocotb/rvv/load_store:store_unit_masked.elf",
+        },
+        # Exception tests: MPACT trap modeling is unproven; drop any entry
+        # that shows cosim divergence.
+        "base_test_exc_illegal": {
+            "elf": "//tests/cocotb/exceptions:illegal.elf",
+        },
+        "base_test_exc_load_fault": {
+            "elf": "//tests/cocotb/exceptions:load_fault_0.elf",
+        },
     },
 )

@@ -21,6 +21,8 @@ load(
     "VCS_TEST_ARGS",
 )
 
+package(default_visibility = ["//visibility:public"])
+
 CSR_TEST_TESTCASES = [
     "csr_read_write_test",
 ]
