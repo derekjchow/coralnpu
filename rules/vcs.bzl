@@ -214,7 +214,7 @@ def _vcs_binary_impl(ctx):
 
     headers_depset = depset([], transitive = headers_depsets)
     ctx.actions.run(
-        inputs = depset(verilog_files + ctx.files.srcs + libs + objects, transitive = [headers_depset]),
+        inputs = depset(verilog_files + ctx.files.srcs + ctx.files.hdrs + libs + objects, transitive = [headers_depset]),
         outputs = [vcs_simv_output, vcs_daidir_output],
         executable = script,
         use_default_shell_env = True,
@@ -232,6 +232,10 @@ _vcs_binary = rule(
     attrs = {
         "verilog_srcs": attr.label_list(allow_files = True),
         "srcs": attr.label_list(allow_files = True),
+        "hdrs": attr.label_list(
+            doc = "Files `include`d by srcs; action inputs only, not compile units.",
+            allow_files = True,
+        ),
         "verilog_deps": attr.label_list(
             doc = "Verilog library dependencies",
             providers = [VerilogInfo],
