@@ -27,6 +27,9 @@ package coralnpu_test_pkg;
   import coralnpu_axi_master_agent_pkg::*;
   import coralnpu_irq_agent_pkg::*;
 
+  import "DPI-C" function void sram_load_elf(input string filename);
+  import "DPI-C" function void sram_clear();
+
   //--------------------------------------------------------------------------
   // Sequence: coralnpu_kickoff_write_seq
   //--------------------------------------------------------------------------
@@ -168,13 +171,13 @@ package coralnpu_test_pkg;
     uvm_event test_start_event;
     time clk_period;
     int unsigned entry_point = 0;
+    protected string test_elf;
 
     function new(string name = "coralnpu_base_test", uvm_component parent = null);
       super.new(name, parent);
     endfunction
 
     virtual function void build_phase(uvm_phase phase);
-      string test_elf;
       string timeout_str;
       string entry_point_str;
       int timeout_int;
@@ -260,7 +263,11 @@ package coralnpu_test_pkg;
       coralnpu_pulse_irq_seq pulse_irq_seq;
       phase.raise_objection(this, "Base test running");
 
-      // Memory is loaded by $readmemh in tb_top before run phase starts.
+      // Backdoor-load the test program into the TCMs and publish the ELF
+      // path for the co-sim checker (same flow the regression test uses).
+      sram_clear();
+      sram_load_elf(test_elf);
+      uvm_config_db#(string)::set(null, "*", "current_test_elf", test_elf);
 
       `uvm_info(get_type_name(), "Waiting for reset deassertion...", UVM_MEDIUM)
       @(posedge irq_vif.clk iff irq_vif.resetn == 1'b1);
@@ -383,9 +390,6 @@ package coralnpu_test_pkg;
   //--------------------------------------------------------------------------
   // Class: coralnpu_regression_test
   //--------------------------------------------------------------------------
-  import "DPI-C" function void sram_load_elf(input string filename);
-  import "DPI-C" function void sram_clear();
-
   class coralnpu_regression_test extends coralnpu_base_test;
     `uvm_component_utils(coralnpu_regression_test)
 
