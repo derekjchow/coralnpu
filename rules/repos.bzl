@@ -16,7 +16,7 @@
 #
 
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file")
 load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 
 def coralnpu_repos():
@@ -348,4 +348,24 @@ def mpact_repos():
         sha256 = "426328af9681929b262147538e61c7b6545bebf70e4db2d483c94d9613ac5909",
         strip_prefix = "coralnpu-mpact-e2a26e6d983f13d4c10875e4e5878a6171c04a06",
         workspace_file = "@coralnpu_hw//third_party/coralnpu_mpact:WORKSPACE",
+    )
+
+    # Required to load @coralnpu_mpact//sim/cosim from the main workspace:
+    # external repo WORKSPACE files are not evaluated here, so its two
+    # http_file deps must be mirrored (values match
+    # third_party/coralnpu_mpact/WORKSPACE).
+    http_file(
+        name = "svdpi_h_file",
+        downloaded_file_path = "svdpi.h",
+        sha256 = "2528c8e529b66dd8e795c8a0fee326166cc51f7dee8fc6a0c6c930534fc780a6",
+        urls = ["https://raw.githubusercontent.com/verilator/verilator/v5.028/include/vltstd/svdpi.h"],
+    )
+
+    http_file(
+        name = "cc_static_library_external",
+        # Filename spelling must match the load() in
+        # @coralnpu_mpact//sim/cosim's BUILD file.
+        downloaded_file_path = "cc_static_libarary.bzl",
+        sha256 = "1287ce9f7e5fe31ad1b5937781531e4ab3f4656edabf650cca9ca720ceb31806",
+        urls = ["https://raw.githubusercontent.com/project-oak/oak/fcceea755f0274d3a0eb7c0461b30af3dc28e40a/cc/build_defs.bzl"],
     )
