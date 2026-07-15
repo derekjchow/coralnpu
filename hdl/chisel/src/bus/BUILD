@@ -47,6 +47,7 @@ chisel_library(
         "TlulIdRemapper.scala",
         "TlulIntegrity.scala",
         "TlulIntegrityTestbench.scala",
+        "TlulRouter.scala",
         "TlulSocket1N.scala",
         "TlulSocketM1.scala",
         "TlulToSram.scala",
@@ -68,6 +69,17 @@ chisel_test(
         ":bus",
         "//hdl/chisel/src/common:testing",
         "//hdl/chisel/src/coralnpu:coralnpu_params",
+    ],
+)
+
+chisel_test(
+    name = "tlul_router_test",
+    srcs = [
+        "TlulRouterTest.scala",
+    ],
+    deps = [
+        ":bus",
+        "//hdl/chisel/src/common:testing",
     ],
 )
 
