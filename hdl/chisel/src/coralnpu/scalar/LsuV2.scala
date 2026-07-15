@@ -16,6 +16,7 @@ package coralnpu
 
 import chisel3._
 import chisel3.util._
+import bus._
 import common._
 import coralnpu.rvv._
 
@@ -622,26 +623,6 @@ class LsuReadData(p: Parameters) extends Bundle {
   val last       = Bool()
 }
 
-object LsuBus extends ChiselEnum {
-  val IBUS     = Value
-  val DBUS     = Value
-  val EXTERNAL = Value
-}
-
-class LsuRead(lineBits: Int) extends Bundle {
-  val bus      = LsuBus()
-  val lineAddr = UInt(lineBits.W)
-}
-
-object LsuRead {
-  def apply(bus: LsuBus.Type, lineAddr: UInt): LsuRead = {
-    val result = Wire(new LsuRead(lineAddr.getWidth))
-    result.bus      := bus
-    result.lineAddr := lineAddr
-    result
-  }
-}
-
 class FlushCmd extends Bundle {
   val all    = Bool()
   val fencei = Bool()
@@ -715,17 +696,20 @@ class LsuV2(p: Parameters) extends Lsu(p) {
 
   val nextSlot = LsuSlot.fromLsuUOp(opQueue.io.dataOut(0), p, 16)
 
-  // Tracks if a read has been fired last cycle.
-  val readFired = RegInit(MakeInvalid(new LsuRead(32 - nextSlot.elemBits)))
+  // Tracks if a read has been fired last cycle (line address of the read).
+  val readFired = RegInit(MakeInvalid(UInt((32 - nextSlot.elemBits).W)))
   val slot      = RegInit(LsuSlot.inactive(p, 16))
 
-  val readData = MuxLookup(readFired.bits.bus, 0.U)(
-    Seq(
-      LsuBus.IBUS     -> io.ibus.rdata,
-      LsuBus.DBUS     -> io.dbus.rdata,
-      LsuBus.EXTERNAL -> io.ebus.dbus.rdata
-    )
-  )
+  // Bus adapter: all memory traffic leaves through one TL-UL port and the
+  // adapter routes it to ibus/dbus/ebus by memory region.
+  val busAdapter = Module(new LsuBusAdapter(p))
+  io.ibus <> busAdapter.io.ibus
+  io.dbus <> busAdapter.io.dbus
+  io.ebus <> busAdapter.io.ebus
+
+  val busA = busAdapter.io.tl.a
+  val busD = busAdapter.io.tl.d
+  busD.ready := true.B
 
   // ==========================================================================
   // Vector update
@@ -743,111 +727,68 @@ class LsuV2(p: Parameters) extends Lsu(p) {
 
   // First stage of load update: Update results based on bus read
   val loadUpdatedSlot =
-    Mux(readFired.valid, slot.loadUpdate(readFired.bits.lineAddr, readData), slot)
+    Mux(readFired.valid, slot.loadUpdate(readFired.bits, busD.bits.data), slot)
 
   // Compute next target transaction
   val targetAddress =
-    loadUpdatedSlot.targetAddress(MakeValid(readFired.valid, readFired.bits.lineAddr))
-  val targetLine     = MakeValid(targetAddress.valid, targetAddress.bits(31, nextSlot.elemBits))
-  val targetLineAddr = targetLine.bits << 4
-  val itcm           = p.m
-    .filter(_.memType == MemoryRegionType.IMEM)
-    .map(_.contains(targetLineAddr))
-    .reduceOption(_ || _)
-    .getOrElse(false.B)
-  val dtcm = p.m
-    .filter(_.memType == MemoryRegionType.DMEM)
-    .map(_.contains(targetLineAddr))
-    .reduceOption(_ || _)
-    .getOrElse(true.B)
-  val peri = p.m
-    .filter(_.memType == MemoryRegionType.Peripheral)
-    .map(_.contains(targetLineAddr))
-    .reduceOption(_ || _)
-    .getOrElse(false.B)
-  val external = !(itcm || dtcm || peri)
-  assert(PopCount(Cat(itcm | dtcm | peri)) <= 1.U)
+    loadUpdatedSlot.targetAddress(MakeValid(readFired.valid, readFired.bits))
+  val targetLine = MakeValid(targetAddress.valid, targetAddress.bits(31, nextSlot.elemBits))
 
   val (wdata, wmask, wactive) = slot.scatter(targetLine.bits)
 
   val (opSize, alignedAddress) = LsuOp.opSize(slot.op, targetAddress.bits, p)
 
-  // ibus data path
-  io.ibus.valid := loadUpdatedSlot.activeTransaction() && itcm && !slot.store && !faultReg.valid
-  io.ibus.addr  := targetLineAddr
-
-  // dbus data path
-  io.dbus.valid := dtcm && Mux(
+  // Request data path. The adapter performs region decode and routing;
+  // stores to IMEM come back as an errored D response.
+  // An error response gates new requests combinationally: faultReg only
+  // captures it a cycle later, and a beat fired in that window would have
+  // its bus valid dropped mid-transaction once the fault empties the slot.
+  busA.valid := Mux(
     slot.store,
     slot.activeTransaction(),
     loadUpdatedSlot.activeTransaction()
-  ) && !faultReg.valid
-  io.dbus.write := slot.store
-  io.dbus.pc    := slot.pc
-  io.dbus.addr  := targetLineAddr
-  io.dbus.adrx  := targetLineAddr
-  io.dbus.size  := opSize
-  io.dbus.wdata := Cat(wdata.reverse)
-  io.dbus.wmask := Cat(wmask.reverse)
-
-  // ebus data path
-  io.ebus.dbus.valid := (external || peri) && Mux(
+  ) && !faultReg.valid && !(busD.valid && busD.bits.error)
+  busA.bits.opcode := Mux(
     slot.store,
-    slot.activeTransaction(),
-    loadUpdatedSlot.activeTransaction()
-  ) && !faultReg.valid
-  io.ebus.dbus.write := slot.store
-  io.ebus.dbus.addr  := alignedAddress
-  io.ebus.dbus.adrx  := targetLineAddr
-  io.ebus.dbus.size  := opSize
-  io.ebus.dbus.wdata := Cat(wdata.reverse)
-  io.ebus.dbus.wmask := Cat(wmask.reverse)
-  io.ebus.dbus.pc    := slot.pc
-  io.ebus.internal   := peri
+    TLULOpcodesA.PutPartialData.asUInt,
+    TLULOpcodesA.Get.asUInt
+  )
+  busA.bits.param   := 0.U
+  busA.bits.size    := OHToUInt(opSize) // opSize is one-hot (1/2/4/16 bytes)
+  busA.bits.source  := 0.U
+  busA.bits.address := alignedAddress
+  busA.bits.mask    := Cat(wmask.reverse)
+  busA.bits.data    := Cat(wdata.reverse)
+  busA.bits.user.pc := slot.pc
 
-  val ibusFired = io.ibus.valid && io.ibus.ready
-  val dbusFired = io.dbus.valid && io.dbus.ready
-  val ebusFired = io.ebus.dbus.valid && io.ebus.dbus.ready
-  assert(PopCount(Seq(ibusFired, dbusFired, ebusFired)) <= 1.U)
-  val slotFired = ebusFired || dbusFired || ibusFired
+  val slotFired = busA.fire
 
-  val readFiredValid =
-    ibusFired || (dbusFired && !io.dbus.write) || (ebusFired && !io.ebus.dbus.write)
-  readFired := MakeValid(
-    readFiredValid,
-    MuxCase(
-      readFired.bits,
-      Seq(
-        (ibusFired)                        -> LsuRead(LsuBus.IBUS, targetLine.bits),
-        (dbusFired && !io.dbus.write)      -> LsuRead(LsuBus.DBUS, targetLine.bits),
-        (ebusFired && !io.ebus.dbus.write) -> LsuRead(LsuBus.EXTERNAL, targetLine.bits)
-      )
-    )
+  // Tracks the in-flight D response (single outstanding, returns the cycle
+  // after the request fires).
+  val respPending = RegInit(false.B)
+  respPending := Mux(busA.fire, true.B, Mux(busD.fire, false.B, respPending))
+
+  readFired := MakeValid(busA.fire && !slot.store, targetLine.bits)
+  assert(
+    !readFired.valid ||
+      (busD.valid && (busD.bits.opcode === TLULOpcodesD.AccessAckData.asUInt))
   )
 
-  // Fault handling
-  val ibusFault = Wire(Valid(new FaultInfo(p)))
-  ibusFault.valid      := loadUpdatedSlot.activeTransaction() && itcm && slot.store
-  ibusFault.bits.write := true.B
-  ibusFault.bits.addr  := targetLineAddr
-  ibusFault.bits.epc   := slot.pc
+  // Fault handling. Bus faults arrive as an error on the D response; rebuild
+  // the fault info from the request captured at issue time.
+  val reqFaultAddr = RegEnable(alignedAddress, busA.fire)
 
   io.fault.valid := faultReg.valid
   io.fault.bits  := faultReg.bits.info
   faultReg       := {
-    val f             = Wire(Valid(new LsuFault(p)))
-    val nextFaultInfo = MuxCase(
-      MakeInvalid(new FaultInfo(p)),
-      Seq(
-        io.ebus.fault.valid -> io.ebus.fault,
-        ibusFault.valid     -> ibusFault
-      )
-    )
-    f.valid      := nextFaultInfo.valid
-    f.bits.info  := nextFaultInfo.bits
-    f.bits.rd    := slot.rd
-    f.bits.op    := slot.op
-    f.bits.store := slot.store
+    val f = Wire(Valid(new LsuFault(p)))
+    f.valid           := busD.fire && busD.bits.error
+    f.bits.info.write := slot.store
+    f.bits.info.addr  := reqFaultAddr
+    f.bits.info.epc   := slot.pc
+    f.bits.rd         := slot.rd
+    f.bits.op         := slot.op
+    f.bits.store      := slot.store
     f
   }
 
@@ -856,17 +797,18 @@ class LsuV2(p: Parameters) extends Lsu(p) {
   val transactionUpdatedSlot = Mux(slot.store, slot.storeUpdate(storeUpdate), loadUpdatedSlot)
   val lsu2RvvFire            = if (p.enableRvv) { io.lsu2rvv.get(0).fire }
   else { false.B }
-  // For scalar stores: complete when transaction is done (slotFired && all bytes written)
+  // For scalar stores: complete when the D response acks the final beat
+  // (the cycle after it fired, when all bytes have been written).
   // For vector stores: complete when lsu2rvv handshake fires with last=1
   // These happen in different cycles, so we can't AND them together.
-  val scalarStoreComplete = slotFired && slot.store && !slot.slotIdle() &&
-    transactionUpdatedSlot.slotIdle() && !LsuOp.isVector(slot.op)
+  val scalarStoreComplete = busD.fire && !busD.bits.error && slot.store &&
+    slot.slotIdle() && !LsuOp.isVector(slot.op)
   val vectorStoreComplete = if (p.enableRvv) {
     lsu2RvvFire && io.lsu2rvv.get(0).bits.last
   } else { false.B }
   val storeComplete = scalarStoreComplete || vectorStoreComplete
   io.storeComplete := Mux(
-    storeComplete && !io.ebus.fault.valid,
+    storeComplete && !(busD.valid && busD.bits.error),
     MakeValid(slot.pc),
     MakeInvalid(UInt(p.programCounterBits.W))
   )
@@ -923,8 +865,13 @@ class LsuV2(p: Parameters) extends Lsu(p) {
   val writebackFired       = writebacksFired.reduce(_ || _)
   val writebackUpdatedSlot = slot.writebackUpdate()
 
+  // Dequeue only once any in-flight response has returned without error, so
+  // a faulting response cannot discard an op dequeued in its shadow.
   // TODO(derekjchow): Improve timing?
-  opQueue.io.deqReady := Mux(slot.slotIdle() && (opQueue.io.nEnqueued > 0.U), 1.U, 0.U)
+  val dequeueOp = slot.slotIdle() && !faultReg.valid &&
+    (!respPending || (busD.fire && !busD.bits.error)) &&
+    (opQueue.io.nEnqueued > 0.U)
+  opQueue.io.deqReady := Mux(dequeueOp, 1.U, 0.U)
 
   // ==========================================================================
   // State transition
@@ -941,7 +888,7 @@ class LsuV2(p: Parameters) extends Lsu(p) {
       // Move to inactive if error.
       (faultReg.valid) -> LsuSlot.inactive(p, 16),
       // When inactive, dequeue if possible
-      (slot.slotIdle() && (opQueue.io.nEnqueued > 0.U)) -> nextSlot,
+      dequeueOp -> nextSlot,
       // Vector update.
       vectorUpdate -> vectorUpdatedSlot,
       // Active transaction update.
@@ -953,5 +900,5 @@ class LsuV2(p: Parameters) extends Lsu(p) {
 
   slot := slotNext
 
-  io.active := !slot.slotIdle() || (opQueue.io.nEnqueued =/= 0.U)
+  io.active := !slot.slotIdle() || (opQueue.io.nEnqueued =/= 0.U) || respPending
 }
