@@ -16,6 +16,7 @@ package coralnpu
 
 import chisel3._
 import chisel3.util._
+import bus._
 import common._
 import coralnpu.rvv._
 
@@ -2015,93 +2016,52 @@ class LsuV3(p: Parameters) extends Lsu(p) {
     io.rvv2lsu.get(1).ready := false.B
   }
 
-  // TODO: refactor out into a bus adapter
+  // Bus adapter: all memory traffic leaves through one TL-UL port and the
+  // adapter routes it to ibus/dbus/ebus by memory region. Stores to IMEM
+  // are accepted by the adapter and come back as an errored D response.
   // TODO: add bookkeeping
-  val addr = Cat(slot.io.busReq.bits.rowAddr, 0.U(p.dbusOffsetBits.W))
-  val itcm = p.m
-    .filter(_.memType == MemoryRegionType.IMEM)
-    .map(_.contains(addr))
-    .reduceOption(_ || _)
-    .getOrElse(false.B)
-  val dtcm = p.m
-    .filter(_.memType == MemoryRegionType.DMEM)
-    .map(_.contains(addr))
-    .reduceOption(_ || _)
-    .getOrElse(true.B)
-  val peri = p.m
-    .filter(_.memType == MemoryRegionType.Peripheral)
-    .map(_.contains(addr))
-    .reduceOption(_ || _)
-    .getOrElse(false.B)
+  val busAdapter = Module(new LsuBusAdapter(p))
+  io.ibus <> busAdapter.io.ibus
+  io.dbus <> busAdapter.io.dbus
+  io.ebus <> busAdapter.io.ebus
 
-  val ibusFault = MakeWireBundle[ValidIO[FaultInfo]](
-    Valid(new FaultInfo(p)),
-    _.valid      -> (slot.io.busReq.valid && slot.io.busReq.bits.write && itcm),
-    _.bits.write -> true.B,
-    _.bits.addr  -> slot.io.busReq.bits.rowAddr,
-    _.bits.epc   -> slot.io.pc
+  val busA = busAdapter.io.tl.a
+  val busD = busAdapter.io.tl.d
+  busD.ready := true.B
+
+  val addr = Cat(slot.io.busReq.bits.rowAddr, 0.U(p.dbusOffsetBits.W))
+  busA.valid       := slot.io.busReq.valid
+  busA.bits.opcode := Mux(
+    slot.io.busReq.bits.write,
+    TLULOpcodesA.PutPartialData.asUInt,
+    TLULOpcodesA.Get.asUInt
   )
-  val faultReg = RegNext(
-    MuxCase(
-      MakeInvalid(new FaultInfo(p)),
-      Seq(
-        io.ebus.fault.valid -> io.ebus.fault,
-        ibusFault.valid     -> ibusFault
-      )
-    ),
-    MakeInvalid(new FaultInfo(p))
+  busA.bits.param      := 0.U
+  busA.bits.size       := log2Ceil(p.lsuDataBytes).U
+  busA.bits.source     := 0.U
+  busA.bits.address    := addr
+  busA.bits.mask       := slot.io.busReq.bits.wmask
+  busA.bits.data       := slot.io.busReq.bits.wdata
+  busA.bits.user.pc    := slot.io.pc
+  slot.io.busReq.ready := busA.ready
+
+  slot.io.busResp.valid      := busD.valid
+  slot.io.busResp.bits.rdata := busD.bits.data
+  slot.io.busResp.bits.fault := busD.bits.error
+
+  // Faults arrive as an error on the D response; rebuild the fault info
+  // from the request captured at issue time.
+  val faultInfo = MakeWireBundle[ValidIO[FaultInfo]](
+    Valid(new FaultInfo(p)),
+    _.valid      -> (busD.valid && busD.bits.error),
+    _.bits.write -> RegEnable(slot.io.busReq.bits.write, busA.fire),
+    _.bits.addr  -> RegEnable(addr, busA.fire),
+    _.bits.epc   -> RegEnable(slot.io.pc, busA.fire)
   )
 
   // TODO(davidgao): flush RS upon fault.
   rs.io.flush := false.B
-  // rs.io.flush := faultReg.valid
-
-  io.ibus.valid := itcm && slot.io.busReq.valid && !slot.io.busReq.bits.write
-  io.ibus.addr  := addr
-  val ibusResp = RegNext(io.ibus.fire || ibusFault.valid, false.B)
-
-  io.dbus.valid := dtcm && slot.io.busReq.valid
-  io.dbus.write := slot.io.busReq.bits.write
-  io.dbus.pc    := slot.io.pc
-  io.dbus.addr  := addr
-  io.dbus.adrx  := addr
-  io.dbus.size  := p.lsuDataBytes.U
-  io.dbus.wdata := slot.io.busReq.bits.wdata
-  io.dbus.wmask := slot.io.busReq.bits.wmask
-  val dbusResp = RegNext(io.dbus.valid && io.dbus.ready, false.B)
-
-  val use_ebus = !(itcm || dtcm)
-  io.ebus.dbus.valid := use_ebus && slot.io.busReq.valid
-  io.ebus.dbus.write := slot.io.busReq.bits.write
-  io.ebus.dbus.pc    := slot.io.pc
-  io.ebus.dbus.addr  := addr             // TODO: limit this
-  io.ebus.dbus.adrx  := addr
-  io.ebus.dbus.size  := p.lsuDataBytes.U // TODO: limit this
-  io.ebus.dbus.wdata := slot.io.busReq.bits.wdata
-  io.ebus.dbus.wmask := slot.io.busReq.bits.wmask
-  io.ebus.internal   := peri
-  val ebusResp = RegNext(io.ebus.dbus.valid && io.ebus.dbus.ready, false.B)
-
-  slot.io.busResp.valid      := ibusResp || dbusResp || ebusResp
-  slot.io.busResp.bits.rdata := MuxUpTo1H(
-    WireInit(UInt(p.lsuDataBits.W), DontCare),
-    Seq(
-      ibusResp -> io.ibus.rdata,
-      dbusResp -> io.dbus.rdata,
-      ebusResp -> io.ebus.dbus.rdata
-    )
-  )
-  slot.io.busResp.bits.fault := faultReg.valid
-
-  slot.io.busReq.ready := MuxUpTo1H(
-    false.B,
-    Seq(
-      // IBus fault is detected here, not on the bus. We need to accept the req.
-      itcm     -> (io.ibus.ready || ibusFault.valid),
-      dtcm     -> io.dbus.ready,
-      use_ebus -> io.ebus.dbus.ready
-    )
-  )
+  // rs.io.flush := faultInfo.valid
 
   io.rd     := slot.io.intWriteback
   io.rd_flt := slot.io.floatWriteback.getOrElse(MakeInvalid(new FloatRegfileWriteDataIO(p)))
@@ -2112,7 +2072,7 @@ class LsuV3(p: Parameters) extends Lsu(p) {
   }
 
   // fault handling
-  io.fault := faultReg
+  io.fault := faultInfo
 
   // status reporting
   io.active        := rs.io.nEnqueued > 0.U || !slot.io.active
