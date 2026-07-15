@@ -395,6 +395,8 @@ chisel_library(
         "scalar/FaultManager.scala",
         "scalar/Fetch.scala",
         "scalar/Lsu.scala",
+        "scalar/LsuV2.scala",
+        "scalar/LsuV3.scala",
         "scalar/Mlu.scala",
         "scalar/Regfile.scala",
         "scalar/SCore.scala",
