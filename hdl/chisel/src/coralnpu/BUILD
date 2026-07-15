@@ -395,6 +395,7 @@ chisel_library(
         "scalar/FaultManager.scala",
         "scalar/Fetch.scala",
         "scalar/Lsu.scala",
+        "scalar/LsuBusAdapter.scala",
         "scalar/LsuV2.scala",
         "scalar/LsuV3.scala",
         "scalar/Mlu.scala",
@@ -409,12 +410,27 @@ chisel_library(
         ":coralnpu_rvv",
         ":retirement_buffer",
         ":rvvi_trace",
+        "//hdl/chisel/src/bus",
         "//hdl/chisel/src/common",
         "//hdl/chisel/src/common:aligner",
         "//hdl/chisel/src/common:circular_buffer_multi",
         "//hdl/chisel/src/common:fp",
         "//hdl/chisel/src/common:instruction_buffer",
         "//hdl/chisel/src/common:scatter_gather",
+    ],
+)
+
+chisel_test(
+    name = "coralnpu_lsu_bus_adapter_tests",
+    size = "large",
+    srcs = [
+        "scalar/LsuBusAdapterTest.scala",
+    ],
+    deps = [
+        ":coralnpu_base",
+        ":coralnpu_scalar",
+        "//hdl/chisel/src/bus",
+        "//hdl/chisel/src/common:testing",
     ],
 )
 
