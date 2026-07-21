@@ -84,9 +84,12 @@ extern "C" void i8_gemv(const int8_t* A, const int8_t* W, const int32_t* bias,
         "lb %[t3], 3(%[ap])\n"
         "addi %[ap], %[ap], 4\n"
         "vsetvli zero, %[vlr], e8, m2, ta, ma\n"
+        // Both vwmuls before their dependent vwmaccs: a dependent uop cannot
+        // dispatch until its producer has completed to the ROB, so give each
+        // producer 4 uops of spacing.
         "vwmul.vx v4, v2, %[t0]\n"
-        "vwmacc.vx v4, %[t1], v28\n"
         "vwmul.vx v24, v30, %[t2]\n"
+        "vwmacc.vx v4, %[t1], v28\n"
         "vwmacc.vx v24, %[t3], v0\n"
         // Next block's loads issue while the vwadds below execute.
         "vle8.v v2, (%[p0])\n"
@@ -109,8 +112,8 @@ extern "C" void i8_gemv(const int8_t* A, const int8_t* W, const int32_t* bias,
         "lb %[t3], 3(%[ap])\n"
         "vsetvli zero, %[vlr], e8, m2, ta, ma\n"
         "vwmul.vx v4, v2, %[t0]\n"
-        "vwmacc.vx v4, %[t1], v28\n"
         "vwmul.vx v24, v30, %[t2]\n"
+        "vwmacc.vx v4, %[t1], v28\n"
         "vwmacc.vx v24, %[t3], v0\n"
         "vsetvli zero, %[vlr], e16, m4, ta, ma\n"
         "vwadd.wv v8, v8, v4\n"
