@@ -27,6 +27,19 @@ def log_matmul_metrics(
     dut._log.info(banner)
 
 
+def log_gemv_metrics(dut, test_name: str, cycles: int, k: int, n: int):
+    total_macs = k * n
+    macs_per_cycle = total_macs / cycles if cycles > 0 else 0
+    cycles_per_mac = cycles / total_macs if total_macs > 0 else 0
+    banner = (
+        f"\n{'='*60}\n PERFORMANCE METRICS: {test_name}\n{'-'*60}\n"
+        f"  Total Cycles   : {cycles:,}\n  Total MACs     : {total_macs:,}\n"
+        f"  MACs / Cycle   : {macs_per_cycle:.2f}\n"
+        f"  Cycles / MAC   : {cycles_per_mac:.2f}\n{'='*60}"
+    )
+    dut._log.info(banner)
+
+
 def log_vector_metrics(dut, test_name: str, cycles: int, total_elements: int):
     cycles_per_element = cycles / total_elements if total_elements > 0 else 0
     banner = (

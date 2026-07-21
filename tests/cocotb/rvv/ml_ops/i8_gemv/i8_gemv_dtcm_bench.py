@@ -1,0 +1,38 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""i8 GEMV benchmark, compute-bound config: weights resident in 512KB DTCM."""
+
+import cocotb
+
+from tests.cocotb.rvv.ml_ops.i8_gemv.i8_gemv_common import (
+    create_dtcm_fixture, run_gemv_benchmark
+)
+
+
+@cocotb.test()
+async def i8_gemv_baseline_dtcm_test(dut):
+    fixture = await create_dtcm_fixture(dut)
+    await run_gemv_benchmark(
+        dut, fixture, 'i8_gemv_baseline_dtcm', transposed_weights=False,
+        timeout_cycles=20_000_000
+    )
+
+
+@cocotb.test()
+async def i8_gemv_opt_dtcm_test(dut):
+    fixture = await create_dtcm_fixture(dut)
+    await run_gemv_benchmark(
+        dut, fixture, 'i8_gemv_opt_dtcm', transposed_weights=True,
+        timeout_cycles=20_000_000
+    )
