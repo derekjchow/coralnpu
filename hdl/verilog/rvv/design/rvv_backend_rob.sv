@@ -300,16 +300,35 @@ module rvv_backend_rob
   assign trap_flush_rvv = trap_in||trap_ready_rvv2rvs; // flush 2 cycles
 
   // bypass ROB info to Dispatch
+  // Forward same-cycle PU result writes so a dependent uop can dispatch in
+  // the cycle its producer completes instead of one cycle later.
+  logic [`ROB_DEPTH-1:0]              fwd_w_valid;
+  logic [`ROB_DEPTH-1:0][`VLEN-1:0]   fwd_w_data;
+  generate
+      for (i=0; i<`ROB_DEPTH; i++) begin : gen_rob2dp_fwd
+        always_comb begin
+          fwd_w_valid[i] = 1'b0;
+          fwd_w_data[i]  = '0;
+          for (int k=0; k<`NUM_SMPORT; k++) begin
+            if (wr_valid_pu2rob[k] && wr_pu2rob[k].w_valid &&
+                (wr_pu2rob[k].rob_entry == wind_uop_rptr[i])) begin
+              fwd_w_valid[i] = 1'b1;
+              fwd_w_data[i]  = wr_pu2rob[k].w_data;
+            end
+          end
+        end
+      end
+  endgenerate
   generate
       for (i=0; i<`ROB_DEPTH; i++) begin : gen_rob2dp
         `ifdef TB_SUPPORT
           assign uop_rob2dp[i].uop_pc  = uop_info[i].uop_pc;
         `endif
           assign uop_rob2dp[i].valid   = entry_valid[i];
-          assign uop_rob2dp[i].w_valid = res_mem[wind_uop_rptr[i]].w_valid & uop_done[wind_uop_rptr[i]];
+          assign uop_rob2dp[i].w_valid = (res_mem[wind_uop_rptr[i]].w_valid & uop_done[wind_uop_rptr[i]]) | fwd_w_valid[i];
           assign uop_rob2dp[i].w_index = uop_info[i].w_index;
           assign uop_rob2dp[i].w_type  = uop_info[i].w_type;
-          assign uop_rob2dp[i].w_data  = res_mem[wind_uop_rptr[i]].w_data;
+          assign uop_rob2dp[i].w_data  = fwd_w_valid[i] ? fwd_w_data[i] : res_mem[wind_uop_rptr[i]].w_data;
           assign uop_rob2dp[i].byte_type = uop_info[i].byte_type;
           assign uop_rob2dp[i].vector_csr = uop_info[i].vector_csr;
       end
