@@ -160,6 +160,10 @@ module zvt_ctrl (
   assign tile      = uop[0].tss.tile;
   assign pattern   = uop[0].tss.pattern;
   assign index     = uop[0].tss.index;
+  // vtzero encodes its destination tile in rd (dst_index[4:1]), not in a TSS:
+  // decode forces its rs1 field to x0, so tss.tile is always 0 for it.
+  logic [$clog2(`NUM_MT)-1:0] zeroTile;
+  assign zeroTile  = uop[0].dst_index[4:1];
   assign vstart    = uop[0].vstart;
   assign tm        = uop[0].tm[$clog2(`TE):0];
   assign tn        = uop[0].vl;
@@ -236,7 +240,7 @@ module zvt_ctrl (
                                                 readData[0][i][({2'b0,index[1:0]}+4'd4 )*`BYTE_WIDTH+:`BYTE_WIDTH],
                                                 readData[0][i][({2'b0,index[1:0]}      )*`BYTE_WIDTH+:`BYTE_WIDTH]};
             // write
-            mvlsuWriteMtIdx[0][i]  = mvlsuReadSubIdx[0][i];
+            mvlsuWriteMtIdx[0][i]  = mvlsuReadMtIdx[0][i];
             mvlsuWriteSubIdx[0][i] = mvlsuReadSubIdx[0][i];
 
             {mvlsuWriteEn[0][i][({2'b0,index[1:0]}+4'd12)],
@@ -257,7 +261,7 @@ module zvt_ctrl (
 
             vdst[i*`WORD_WIDTH+:`WORD_WIDTH] = readData[0][i][{index[1:0],2'b0}*`BYTE_WIDTH+:`WORD_WIDTH];
             // write
-            mvlsuWriteMtIdx[0][i]  = mvlsuReadSubIdx[0][i];
+            mvlsuWriteMtIdx[0][i]  = mvlsuReadMtIdx[0][i];
             mvlsuWriteSubIdx[0][i] = mvlsuReadSubIdx[0][i];
 
             mvlsuWriteEn[0][i][{index[1:0],2'b0}+:4] = bodyTn[4*i+:4];
@@ -282,8 +286,8 @@ module zvt_ctrl (
                                                     readData[0][2*i  ][({index[1],1'b0,index[0],1'b0}+4'd4)*`BYTE_WIDTH+:`HWORD_WIDTH],
                                                     readData[0][2*i+1][({index[1],1'b0,index[0],1'b0}     )*`BYTE_WIDTH+:`HWORD_WIDTH]};
             // write
-            mvlsuWriteMtIdx[0][2*i  ]  = mvlsuReadSubIdx[0][i];
-            mvlsuWriteMtIdx[0][2*i+1]  = mvlsuReadSubIdx[0][i];
+            mvlsuWriteMtIdx[0][2*i  ]  = mvlsuReadMtIdx[0][2*i  ];
+            mvlsuWriteMtIdx[0][2*i+1]  = mvlsuReadMtIdx[0][2*i+1];
             mvlsuWriteSubIdx[0][2*i  ] = mvlsuReadSubIdx[0][i];
             mvlsuWriteSubIdx[0][2*i+1] = mvlsuReadSubIdx[0][i];
 
@@ -309,7 +313,7 @@ module zvt_ctrl (
             vdst[i*2*`WORD_WIDTH+:2*`WORD_WIDTH] = {readData[0][i][({1'b0,index[0],2'b0}+4'd8)*`BYTE_WIDTH+:`WORD_WIDTH],
                                                     readData[0][i][({1'b0,index[0],2'b0}     )*`BYTE_WIDTH+:`WORD_WIDTH]};
             // write
-            mvlsuWriteMtIdx[0][i]  = mvlsuReadSubIdx[0][i];
+            mvlsuWriteMtIdx[0][i]  = mvlsuReadMtIdx[0][i];
             mvlsuWriteSubIdx[0][i] = mvlsuReadSubIdx[0][i];
 
             {mvlsuWriteEn[0][i][({1'b0,index[0],2'b0}+4'd4)+:4],
@@ -339,8 +343,8 @@ module zvt_ctrl (
                                                     readData[0][2*i  ][({1'b0,index[0],2'b0}+4'd8)*`BYTE_WIDTH+:`WORD_WIDTH],
                                                     readData[0][2*i  ][({1'b0,index[0],2'b0}     )*`BYTE_WIDTH+:`WORD_WIDTH]};
             // write
-            mvlsuWriteMtIdx[0][2*i  ]  = mvlsuReadSubIdx[0][2*i  ];
-            mvlsuWriteMtIdx[0][2*i+1]  = mvlsuReadSubIdx[0][2*i+1];
+            mvlsuWriteMtIdx[0][2*i  ]  = mvlsuReadMtIdx[0][2*i  ];
+            mvlsuWriteMtIdx[0][2*i+1]  = mvlsuReadMtIdx[0][2*i+1];
             mvlsuWriteSubIdx[0][2*i  ] = mvlsuReadSubIdx[0][2*i  ];
             mvlsuWriteSubIdx[0][2*i+1] = mvlsuReadSubIdx[0][2*i+1];
 
@@ -359,17 +363,23 @@ module zvt_ctrl (
           end
           else begin
             // read
-            mvlsuReadMtIdx[0][2*i  ]  = {tile[$clog2(`NUM_MT)-1:2], index[$clog2(`TE/4)], 1'b0};
-            mvlsuReadMtIdx[0][2*i+1]  = {tile[$clog2(`NUM_MT)-1:2], index[$clog2(`TE/4)], 1'b1};
-            mvlsuReadSubIdx[0][2*i  ] = ($clog2(`NUM_SUBTILE))'(index[$clog2(`TE/4)-1:1]*`TE/4) +
+            // TEW=32 punning: ptile = tile + 2*(row/(TE/2)) + col[1], and the
+            // subtile row is (row/2)%(TE/4) -- i.e. the partition bit is
+            // row's MSB (index[log2(TE/2)]), with the bits below it (down to
+            // bit 1) selecting the subtile row. This matches the PE array's
+            // addressing (BLKID[1] carries row/(TE/2), readMtId carries
+            // (row/2)%(TE/4)).
+            mvlsuReadMtIdx[0][2*i  ]  = {tile[$clog2(`NUM_MT)-1:2], index[$clog2(`TE/2)], 1'b0};
+            mvlsuReadMtIdx[0][2*i+1]  = {tile[$clog2(`NUM_MT)-1:2], index[$clog2(`TE/2)], 1'b1};
+            mvlsuReadSubIdx[0][2*i  ] = ($clog2(`NUM_SUBTILE))'(index[$clog2(`TE/2)-1:1]*`TE/4) +
                                         partSubIdx32[i];
             mvlsuReadSubIdx[0][2*i+1] = mvlsuReadSubIdx[0][2*i];
 
             vdst[i*4*`WORD_WIDTH+:4*`WORD_WIDTH] = {readData[0][2*i+1][{index[0],3'b0}*`BYTE_WIDTH+:2*`WORD_WIDTH],
                                                     readData[0][2*i  ][{index[0],3'b0}*`BYTE_WIDTH+:2*`WORD_WIDTH]};
             // write
-            mvlsuWriteMtIdx[0][2*i  ]  = mvlsuReadSubIdx[0][2*i];
-            mvlsuWriteMtIdx[0][2*i+1]  = mvlsuReadSubIdx[0][2*i+1];
+            mvlsuWriteMtIdx[0][2*i  ]  = mvlsuReadMtIdx[0][2*i  ];
+            mvlsuWriteMtIdx[0][2*i+1]  = mvlsuReadMtIdx[0][2*i+1];
             mvlsuWriteSubIdx[0][2*i  ] = mvlsuReadSubIdx[0][2*i];
             mvlsuWriteSubIdx[0][2*i+1] = mvlsuReadSubIdx[0][2*i+1];
 
@@ -438,10 +448,10 @@ module zvt_ctrl (
       EEW8: begin
         for(int i=0; i<`TE/4*`COMPRATIO; i++) begin
           for(int j=0; j<`TE/4/4; j++) begin
-            zeroWriteMtIdx[0][`TE/4/4*i+j] = tile;
-            zeroWriteMtIdx[1][`TE/4/4*i+j] = tile;
-            zeroWriteMtIdx[2][`TE/4/4*i+j] = tile;
-            zeroWriteMtIdx[3][`TE/4/4*i+j] = tile;
+            zeroWriteMtIdx[0][`TE/4/4*i+j] = zeroTile;
+            zeroWriteMtIdx[1][`TE/4/4*i+j] = zeroTile;
+            zeroWriteMtIdx[2][`TE/4/4*i+j] = zeroTile;
+            zeroWriteMtIdx[3][`TE/4/4*i+j] = zeroTile;
             
             zeroWriteSubIdx[0][`TE/4/4*i+j] = (`SUBTILE_SIZE)'((`TE/4)*(`TE/4*`COMPRATIO)*cnt+`TE/4*i+4*j);
             zeroWriteSubIdx[1][`TE/4/4*i+j] = (`SUBTILE_SIZE)'((`TE/4)*(`TE/4*`COMPRATIO)*cnt+`TE/4*i+4*j+'d1);
@@ -469,10 +479,10 @@ module zvt_ctrl (
       EEW16: begin
         for(int i=0; i<`TE/4*`COMPRATIO; i++) begin
           for(int j=0; j<`TE/4/2; j++) begin
-            zeroWriteMtIdx[0][`TE/4/2*i+j] = {tile[3:1], 1'b0};
-            zeroWriteMtIdx[1][`TE/4/2*i+j] = {tile[3:1], 1'b0};
-            zeroWriteMtIdx[2][`TE/4/2*i+j] = {tile[3:1], 1'b1};
-            zeroWriteMtIdx[3][`TE/4/2*i+j] = {tile[3:1], 1'b1};
+            zeroWriteMtIdx[0][`TE/4/2*i+j] = {zeroTile[3:1], 1'b0};
+            zeroWriteMtIdx[1][`TE/4/2*i+j] = {zeroTile[3:1], 1'b0};
+            zeroWriteMtIdx[2][`TE/4/2*i+j] = {zeroTile[3:1], 1'b1};
+            zeroWriteMtIdx[3][`TE/4/2*i+j] = {zeroTile[3:1], 1'b1};
             
             zeroWriteSubIdx[0][`TE/4/2*i+j] = (`SUBTILE_SIZE)'((`TE/4)*(`TE/4*`COMPRATIO)*cnt+`TE/4*i+2*j);
             zeroWriteSubIdx[1][`TE/4/2*i+j] = (`SUBTILE_SIZE)'((`TE/4)*(`TE/4*`COMPRATIO)*cnt+`TE/4*i+2*j+'d1);
@@ -521,10 +531,10 @@ module zvt_ctrl (
       default: begin  // EEW32
         for(int i=0; i<`TE/4*`COMPRATIO; i++) begin
           for(int j=0; j<`TE/2/2; j++) begin
-            zeroWriteMtIdx[0][`TE/4*i+j] = {tile[3:2], 2'd0};
-            zeroWriteMtIdx[1][`TE/4*i+j] = {tile[3:2], 2'd1};
-            zeroWriteMtIdx[2][`TE/4*i+j] = {tile[3:2], 2'd2};
-            zeroWriteMtIdx[3][`TE/4*i+j] = {tile[3:2], 2'd3};
+            zeroWriteMtIdx[0][`TE/4*i+j] = {zeroTile[3:2], 2'd0};
+            zeroWriteMtIdx[1][`TE/4*i+j] = {zeroTile[3:2], 2'd1};
+            zeroWriteMtIdx[2][`TE/4*i+j] = {zeroTile[3:2], 2'd2};
+            zeroWriteMtIdx[3][`TE/4*i+j] = {zeroTile[3:2], 2'd3};
             
             zeroWriteSubIdx[0][`TE/4*i+j] = (`SUBTILE_SIZE)'((`TE/4)*(`TE/4*`COMPRATIO)*cnt+`TE/4*i+j);
             zeroWriteSubIdx[1][`TE/4*i+j] = (`SUBTILE_SIZE)'((`TE/4)*(`TE/4*`COMPRATIO)*cnt+`TE/4*i+j);
@@ -542,12 +552,12 @@ module zvt_ctrl (
                                                                                          {4{bodyTn[(4*j+2)+1]}},
                                                                                          {4{bodyTn[(4*j+2)+0]}}};
             zeroWriteEn[2][`TE/4*i+j] = {{8{bodyTm[`TE/2+(`TE/4*`COMPRATIO)*2*cnt+2*i+1]}},
-                                         {8{bodyTm[`TE/2+(`TE/4*`COMPRATIO)*2*cnt+2*i  ]}}} & {{4{bodyTn[(4*j  )+1]}}, 
+                                         {8{bodyTm[`TE/2+(`TE/4*`COMPRATIO)*2*cnt+2*i  ]}}} & {{4{bodyTn[(4*j  )+1]}},
                                                                                                {4{bodyTn[(4*j  )+0]}},
                                                                                                {4{bodyTn[(4*j  )+1]}},
                                                                                                {4{bodyTn[(4*j  )+0]}}};
-            zeroWriteEn[2][`TE/4*i+j] = {{8{bodyTm[`TE/2+(`TE/4*`COMPRATIO)*2*cnt+2*i+1]}},
-                                         {8{bodyTm[`TE/2+(`TE/4*`COMPRATIO)*2*cnt+2*i  ]}}} & {{4{bodyTn[(4*j+2)+1]}}, 
+            zeroWriteEn[3][`TE/4*i+j] = {{8{bodyTm[`TE/2+(`TE/4*`COMPRATIO)*2*cnt+2*i+1]}},
+                                         {8{bodyTm[`TE/2+(`TE/4*`COMPRATIO)*2*cnt+2*i  ]}}} & {{4{bodyTn[(4*j+2)+1]}},
                                                                                                {4{bodyTn[(4*j+2)+0]}},
                                                                                                {4{bodyTn[(4*j+2)+1]}},
                                                                                                {4{bodyTn[(4*j+2)+0]}}};
@@ -646,14 +656,10 @@ module zvt_ctrl (
   assign miscRtMtIdx    = uop[0].dst_index[4:1];
 `endif
 
-  always_comb begin
-    case(isVme2Lsu) 
-      isVme2Lsu,
-      isLsu2Vme,
-      isMv2Vme: miscRtVld = uopVld[0]&uopRdy[0]&uop[0].last_uop_valid;
-      isZero:   miscRtVld = uopVld[0]&uopRdy[0]&cntCr;
-      default:  miscRtVld = 'b0;
-    endcase
-  end
+  // Every rtCmd push must be matched by exactly one push into each of zvt's
+  // four mtInfoRs FIFOs or vmeRt wedges. PE ops push those via peRtVld from
+  // the array; every other op (lsu, moves, zero) pushes all four together
+  // through miscRtVld, on the same cycle its rtCmd entry is pushed.
+  assign miscRtVld = !isPe[0] && uopVld[0] && uopRdy[0] && uop[0].last_uop_valid;
 
 endmodule

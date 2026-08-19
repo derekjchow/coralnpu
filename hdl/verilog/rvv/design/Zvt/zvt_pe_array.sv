@@ -180,7 +180,9 @@ module zvt_pe_array (
 
   // ready to start up. 
   assign canStart = &peCmdVld[3:0] && peCmd[0].first_uop_valid && peCmd[3].last_uop_valid;
-  assign peCmdRdy = {4{canStart && cntCr}};
+  // Pop only when the final M-chunk is actually accepted by the blocks; the
+  // counter itself only advances under &blkCmdRdy (cntEn below).
+  assign peCmdRdy = {4{canStart && cntCr && (&blkCmdRdy)}};
 
   // counter
   cdffr #(.T(logic [$clog2(`PROCESS_DELAY)-1:0]))
@@ -361,8 +363,8 @@ module zvt_pe_array (
 
     for(int i=0; i<2; i++) begin
       for(int j=0; j<2; j++) begin
-        fpexp.of = fpexp.of | fpexpBlkVld[i][j] && (fpexpBlk[i][j].of);
-        fpexp.nv = fpexp.nv | fpexpBlkVld[i][j] && (fpexpBlk[i][j].nv);
+        fpexp.of = fpexp.of | (fpexpBlkVld[i][j] && fpexpBlk[i][j].of);
+        fpexp.nv = fpexp.nv | (fpexpBlkVld[i][j] && fpexpBlk[i][j].nv);
       end
     end
   end

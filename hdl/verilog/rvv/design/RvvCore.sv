@@ -242,7 +242,6 @@ module RvvCore #(parameter N = 4,
   logic                 uop_vme2lsu_vld_dummy;
   UOP_VME2LSU_t         uop_vme2lsu_dummy;
   logic                 uop_lsu2vme_rdy_dummy;
-  logic                 vme_lsuflush_vld_dummy;
   logic                 vme_lsuflush_rdy_dummy;
 `endif
 
@@ -303,11 +302,15 @@ module RvvCore #(parameter N = 4,
       .uop_lsu2vme_vld(1'b0),
       .uop_lsu2vme('0),
       .uop_lsu2vme_rdy(uop_lsu2vme_rdy_dummy),
-      .vme_lsuflush_vld(vme_lsuflush_vld_dummy),
+      // No VME LSU integration at this level: never request a flush. An
+      // undriven wire here is an X on the ROB's trap_flush under VCS.
+      .vme_lsuflush_vld(1'b0),
       .vme_lsuflush_rdy(vme_lsuflush_rdy_dummy),
       .vmeRtVld(),
       .vmeRt(),
-      .vmeRtRdy(1'b0)
+      // The retire-info stream is trace-only and unconsumed here; sink it so
+      // zvt's rtCmdRs/mtInfoRs FIFOs drain instead of wedging after 8 ops.
+      .vmeRtRdy(1'b1)
 `endif
   );
 

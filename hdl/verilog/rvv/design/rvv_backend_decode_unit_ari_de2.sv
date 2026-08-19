@@ -684,8 +684,8 @@ module rvv_backend_decode_unit_ari_de2
               if(inst_funct3==OPMVV)
                 uop_class[i] = first_uop_valid[i] ? XXV : XXX;
               `ifdef ZVT_ON
-              else  // vtmv.t.v
-                uop_class[i] = XXX;
+              else  // vtmv.t.v reads its source vector group through vs2
+                uop_class[i] = XVX;
               `endif
             end
 
@@ -1240,11 +1240,17 @@ module rvv_backend_decode_unit_ari_de2
             VASUBU,
             VASUB,
             VSLIDE1UP,
-            VSLIDE1DOWN,
-            VCOMPRESS_VTMVTV: begin
+            VSLIDE1DOWN: begin
               vd_offset[i] = uop_index_current[i][`UOP_INDEX_WIDTH_ALU-1:0];
               vd_valid[i]  = 1'b1;
-            end   
+            end
+
+            VCOMPRESS_VTMVTV: begin
+              // vcompress (OPMVV) writes vd; vtmv.t.v (OPMVX) writes only
+              // tile state and must not advertise a vector destination.
+              vd_offset[i] = uop_index_current[i][`UOP_INDEX_WIDTH_ALU-1:0];
+              vd_valid[i]  = inst_funct3==OPMVV;
+            end
 
             VREDSUM,
             VREDMAXU,
@@ -1868,10 +1874,23 @@ module rvv_backend_decode_unit_ari_de2
             VREDMIN,
             VREDAND,
             VREDOR,
-            VREDXOR,
+            VREDXOR: begin
+              vs2_offset[i] = uop_index_current[i][`UOP_INDEX_WIDTH_ALU-1:0];
+              vs2_valid[i]  = 1'b1;
+            end
+
             VWRXUNARY0:begin
               vs2_offset[i] = uop_index_current[i][`UOP_INDEX_WIDTH_ALU-1:0];
-              vs2_valid[i]  = 1'b1;        
+              vs2_valid[i]  = 1'b1;
+            `ifdef ZVT_ON
+              // vtzero/vtmv.v.t (OPMVX) carry an opcode in the vs2 field, not
+              // a register. Offsetting it per-uop breaks zvt_ctrl's decode of
+              // uops 1..3, and marking it valid creates false RAW hazards.
+              if(inst_funct3==OPMVX && (vs2_opcode==VTZERO || vs2_opcode==VTMVVT)) begin
+                vs2_offset[i] = 'b0;
+                vs2_valid[i]  = 1'b0;
+              end
+            `endif
             end
 
             VXUNARY0: begin
