@@ -43,7 +43,11 @@ module zvt_pe_mulbulk_int_lane#(
 
   logic signed[WIDTH/8-1:0][8:0]               A, B;
   logic signed[WIDTH/8-1:0][WIDTH/8-1:0][17:0] pp_raw;
-  logic signed[WIDTH/8-1:0][WIDTH/8-1:0][15:0] pp;
+  // 17 bits: bit16 doubles as the sign for signed products (which fit int16,
+  // so bit16==bit15) and stays 0 for unsigned products (< 2^16). Sign-
+  // extending from bit16 at the add-up stage is then correct for both,
+  // without piping the signedness mode alongside.
+  logic signed[WIDTH/8-1:0][WIDTH/8-1:0][16:0] pp;
   logic signed[WIDTH/8-1:0][WIDTH/8-1:0]       pp_enable;
   generate for (i = 0; i < WIDTH/8; i++) begin: gen_pp_a
     // 1. split inputs to 8-bit groups, with input masking and sign injection to form 9-bit A[i]&B[i]
@@ -55,7 +59,7 @@ module zvt_pe_mulbulk_int_lane#(
     // 2. make partial products (pp=Ai*Bj)
     for (j = 0; j < WIDTH/8; j++) begin: pp_b
       assign pp_raw[i][j] = signed'({{9{A[i][8]}}, A[i]}) * signed'({{9{B[j][8]}}, B[j]});
-      assign pp[i][j] = pp_raw[i][j][15:0];  // no overflow when actual input is [u]int8, guarded
+      assign pp[i][j] = pp_raw[i][j][16:0];  // no overflow when actual input is [u]int8, guarded
       `ifdef ASSERT_ON
         wire inject_en_j = (INT_FMT_CONFIG[0] && (src_fmt == fpnew_pkg::INT8 )) ||
                           (INT_FMT_CONFIG[1] && (src_fmt == fpnew_pkg::INT16) && j[0]);
@@ -86,7 +90,7 @@ module zvt_pe_mulbulk_int_lane#(
   // ----------
 
   fpnew_pkg::int_format_e [0:NUM_MID_REGS] src_fmt_pipe;
-  logic [0:NUM_MID_REGS][WIDTH/8-1:0][WIDTH/8-1:0][15:0] pp_pipe;
+  logic [0:NUM_MID_REGS][WIDTH/8-1:0][WIDTH/8-1:0][16:0] pp_pipe;
   logic [0:NUM_MID_REGS][WIDTH/8-1:0][WIDTH/8-1:0] pp_enable_pipe;
   // Input stage
   assign pp_pipe[0] = pp;
@@ -100,13 +104,13 @@ module zvt_pe_mulbulk_int_lane#(
       .e(reg_enable[i]), .clk(clk), .rst_n(rst_n));
     for (j = 0; j < WIDTH/8; j++) begin
       for (k = 0; k < WIDTH/8; k++) begin
-        edff#(.T(logic[15:0])) pp_reg(.q(pp_pipe[i+1][j][k]), .d(pp_pipe[i][j][k]),
+        edff#(.T(logic[16:0])) pp_reg(.q(pp_pipe[i+1][j][k]), .d(pp_pipe[i][j][k]),
           .e(pp_enable_pipe[i][j][k]&&reg_enable[i]), .clk(clk), .rst_n(rst_n));
       end
     end
   end endgenerate
   // Output stage
-  wire [WIDTH/8-1:0][WIDTH/8-1:0][15:0] pp_q      = pp_pipe[NUM_MID_REGS];
+  wire [WIDTH/8-1:0][WIDTH/8-1:0][16:0] pp_q      = pp_pipe[NUM_MID_REGS];
   wire fpnew_pkg::int_format_e          src_fmt_q = src_fmt_pipe[NUM_MID_REGS];
 
   // ----------
@@ -121,13 +125,18 @@ module zvt_pe_mulbulk_int_lane#(
     int16_result = '0;
 
     // let eda to simplify the add trees
+    // Sign-extend each 17-bit partial product from bit16 (see pp declaration).
     if (INT_FMT_CONFIG[0] && (src_fmt_q == fpnew_pkg::INT8)) begin
       for (int x = 0; x < WIDTH/8; x++)
-        int8_result = int8_result + pp_q[x][x];
+        int8_result = int8_result + {{(WIDTH-17){pp_q[x][x][16]}}, pp_q[x][x]};
     end
     if (INT_FMT_CONFIG[1] && (src_fmt_q == fpnew_pkg::INT16)) begin
       for (int x = 0; x < WIDTH/8; x = x + 2)
-        int16_result = int16_result+pp_q[x][x]+{pp_q[x+1][x], 8'b0}+{pp_q[x][x+1], 8'b0}+{pp_q[x+1][x+1], 16'b0};
+        int16_result = int16_result
+                     + {{(WIDTH-17){pp_q[x  ][x  ][16]}}, pp_q[x  ][x  ]}
+                     + ({{(WIDTH-17){pp_q[x+1][x  ][16]}}, pp_q[x+1][x  ]} << 8)
+                     + ({{(WIDTH-17){pp_q[x  ][x+1][16]}}, pp_q[x  ][x+1]} << 8)
+                     + ({{(WIDTH-17){pp_q[x+1][x+1][16]}}, pp_q[x+1][x+1]} << 16);
     end
 
   end

@@ -345,8 +345,8 @@ module zvt_pe_block (
     fpexp = 'b0;
     for(int i=0; i<`TE/2*`COMPRATIO; i++) begin
       for(int j=0; j<`TE/2; j++) begin
-        fpexp.of = fpexp.of | adderResVld[i][j] && (adderTag[ADDERPIPENUM].status[i][j].OF || adderStatus[i][j].OF);
-        fpexp.nv = fpexp.nv | adderResVld[i][j] && (adderTag[ADDERPIPENUM].status[i][j].NV || adderStatus[i][j].NV);
+        fpexp.of = fpexp.of | (adderResVld[i][j] && (adderTag[ADDERPIPENUM].status[i][j].OF || adderStatus[i][j].OF));
+        fpexp.nv = fpexp.nv | (adderResVld[i][j] && (adderTag[ADDERPIPENUM].status[i][j].NV || adderStatus[i][j].NV));
       end
     end
   end

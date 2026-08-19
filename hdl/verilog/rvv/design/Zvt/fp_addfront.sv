@@ -22,6 +22,9 @@ module fp_addfront#(
 
   // input control,
   input logic                            do_subtract,
+  // Only used to pick the sign of an exact-zero sum (IEEE 754 6.3: + in all
+  // rounding modes except roundTowardNegative).
+  input fpnew_pkg::roundmode_e           rnd_mode,
 
   // normal resultuct
   output logic                           result_sign,
@@ -152,18 +155,18 @@ module fp_addfront#(
   localparam int unsigned SUM_LZA_WIDTH   = OUT_SIG_BITS + 4; // absaddsub input width
   localparam int unsigned SUM_TOTAL_WIDTH = OUT_SIG_BITS + 5; // absaddsub output width (with carry)
 
-  // do significand add/subtract with overflow bit, and LZA in parallel
-  logic [$clog2(SUM_LZA_WIDTH+1)-1:0] lza_scnt;
+  // do significand add/subtract with overflow bit. The LZA is disabled:
+  // u_sum_align below uses its exact internal LZC (see comment there).
   fp_absaddsub#(
     .IN_WIDTH   (SUM_LZA_WIDTH),
-    .ENABLE_LZA (1'b1)
+    .ENABLE_LZA (1'b0)
   ) u_addsub (
     .a({aligned_significands[0], aligned_round_bits[0], aligned_sticky_bits[0]}),
     .b({aligned_significands[1], aligned_round_bits[1], aligned_sticky_bits[1]}),
     .do_subtract(a_sign ^ b_sign ^ do_subtract),
     .sum({sum_significand, sum_round_bit, sum_sticky_bit}),
     .sum_negative(sum_negative),
-    .lza_scnt(lza_scnt)
+    .lza_scnt()
   );
 
   wire [SUM_TOTAL_WIDTH-1:0] sum_concat = {sum_significand, sum_round_bit, sum_sticky_bit};
@@ -177,19 +180,22 @@ module fp_addfront#(
     .IN_SIG_BITS(SUM_TOTAL_WIDTH),
     .OUT_EXP_BITS(OUT_EXP_BITS),
     .OUT_SIG_BITS(OUT_SIG_BITS),
-    .USE_EXT_LZC(1'b1),
-    .USE_LZA_POSTFIX(1'b1)
+    // Use the exact internal LZC: fp_absaddsub's LZA hint can be off by more
+    // than the one bit USE_LZA_POSTFIX is able to correct, which leaves the
+    // sum denormalized and corrupts the rounded result.
+    .USE_EXT_LZC(1'b0),
+    .USE_LZA_POSTFIX(1'b0)
   ) u_sum_align (
     .in_exponent(signed'({2'b0, sum_exponent}) + 1'b1),  // +1 to adjust point position, P(sum) == 2
     .in_significand(sum_concat),
 
-    .ext_lzc_cnt(lza_scnt),
+    .ext_lzc_cnt('0),
     .ext_in_zero(sum_is_zero),
 
     .align_minimum_exponent({{OUT_EXP_BITS-1{1'b0}}, 1'b1}),
     .align_trimmed_exponent('0),
 
-    .out_exponent(result_exponent),
+    .out_exponent(result_exponent_raw),
     .out_significand(result_significand),
     .out_round_bit(result_round_bit),
     .out_sticky_bit(result_sticky_bit),
@@ -198,6 +204,18 @@ module fp_addfront#(
     .overflow(align_overflow)
   );
 
-  assign result_sign = a_sign ^ sum_negative;
+  // fp_align does not special-case an all-zero significand (its exponent
+  // output is garbage there); force a true zero encoding so rounding doesn't
+  // fabricate an implicit leading one.
+  logic [OUT_EXP_BITS-1:0] result_exponent_raw;
+  assign result_exponent = sum_is_zero ? '0 : result_exponent_raw;
+
+  // Exact-zero sums from an effective subtraction are +0 in every rounding
+  // mode except roundTowardNegative; an effective addition of zeros keeps the
+  // operands' common sign.
+  wire effective_subtraction = a_sign ^ b_sign ^ do_subtract;
+  assign result_sign = sum_is_zero
+      ? (effective_subtraction ? (rnd_mode == fpnew_pkg::RDN) : a_sign)
+      : (a_sign ^ sum_negative);
 
 endmodule

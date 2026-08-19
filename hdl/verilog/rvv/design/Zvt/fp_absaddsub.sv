@@ -25,12 +25,20 @@ module fp_absaddsub#(
 
     wire [IN_WIDTH:0] raw_sum = {1'b0, a}+b_s+carry_in;
 
-    assign sum_negative = do_subtract && raw_sum[IN_WIDTH];
+    // On subtract, carry-out means no borrow, i.e. a >= b: the result is
+    // negative exactly when the carry-out is absent. The carry bit itself is
+    // not part of |a-b| and must not leak into sum.
+    assign sum_negative = do_subtract && !raw_sum[IN_WIDTH];
 
     if (PARALLEL_ADDSUB) begin
-      assign sum = sum_negative ? ({1'b0, (b-a)}) : raw_sum;
+      assign sum = do_subtract
+          ? {1'b0, sum_negative ? (b-a) : raw_sum[IN_WIDTH-1:0]}
+          : raw_sum;
     end else begin
-      assign sum = sum_negative ? -raw_sum : raw_sum;
+      assign sum = do_subtract
+          ? {1'b0, sum_negative ? (~raw_sum[IN_WIDTH-1:0] + 1'b1)
+                                : raw_sum[IN_WIDTH-1:0]}
+          : raw_sum;
     end
   end else begin: g_split
     // Split path: caller guarantees the larger of |a|,|b| has 0 in the low
@@ -57,7 +65,8 @@ module fp_absaddsub#(
     wire [VALID_HIGH_BITS-1:0] b_high_s    = do_subtract ? ~b_high : b_high;
     wire [VALID_HIGH_BITS:0]   ab_high     = {1'b0, a_high} + b_high_s + carry_in_ab;
 
-    assign sum_negative = do_subtract && ab_high[VALID_HIGH_BITS];
+    // As above: on subtract, carry-out of the a-b path means a >= b.
+    assign sum_negative = do_subtract && !ab_high[VALID_HIGH_BITS];
 
     if (PARALLEL_ADDSUB) begin: g_par
       // Dedicated b-a subtractor on the high slice (symmetric borrow rule).
@@ -65,8 +74,8 @@ module fp_absaddsub#(
       wire [VALID_HIGH_BITS-1:0] a_high_s    = do_subtract ? ~a_high : a_high;
       wire [VALID_HIGH_BITS:0]   ba_high     = {1'b0, b_high} + a_high_s + carry_in_ba;
       wire [VALID_HIGH_BITS-1:0] sub_high    =
-          sum_negative ? ab_high[VALID_HIGH_BITS-1:0]
-                       : ba_high[VALID_HIGH_BITS-1:0];
+          sum_negative ? ba_high[VALID_HIGH_BITS-1:0]
+                       : ab_high[VALID_HIGH_BITS-1:0];
       assign sum = {do_subtract ? {1'b0, sub_high} : ab_high, low_result};
     end else begin: g_neg
       // No dedicated b-a subtractor: derive b_high-a_high from ab_high[low]
@@ -76,7 +85,7 @@ module fp_absaddsub#(
       wire [VALID_HIGH_BITS-1:0] ba_high_bits =
           ~ab_high[VALID_HIGH_BITS-1:0] + nonzero_low_is_zero;
       wire [VALID_HIGH_BITS-1:0] sub_high =
-          sum_negative ? ab_high[VALID_HIGH_BITS-1:0] : ba_high_bits;
+          sum_negative ? ba_high_bits : ab_high[VALID_HIGH_BITS-1:0];
       assign sum = {do_subtract ? {1'b0, sub_high} : ab_high, low_result};
     end
   end endgenerate

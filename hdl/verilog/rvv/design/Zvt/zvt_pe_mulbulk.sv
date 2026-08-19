@@ -205,7 +205,7 @@ module zvt_pe_mulbulk #(
     .reg_enable(mid_reg_enable),
     .up_valid(inp_lane_int),
 
-    .operand_signed({op == INTMUL, op_mod}),
+    .operand_signed({op_q == INTMUL, op_mod_q}),
     .operands(operands_q),
     .mask(mask_q),
     .src_fmt(isrc_fmt_q),

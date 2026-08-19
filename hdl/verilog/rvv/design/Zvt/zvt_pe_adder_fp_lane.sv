@@ -45,6 +45,7 @@ module zvt_pe_adder_fp_lane#(
     .b_exponent (operands[1][30:23]),
     .b_mantissa (operands[1][22: 0]),
     .do_subtract(do_subtract),
+    .rnd_mode   (rnd_mode),
 
     // add/subtract output
     .result_sign       (sum_sign       ),
